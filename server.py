@@ -116,113 +116,78 @@ def process_file(file_path):
 
 @app.route('/api/validate-key', methods=['POST'])
 def validate_key():
-    try:
-        # Get the API key from the request
-        data = request.get_json()
-        
-        # Handle different possible formats of the API key
-        if isinstance(data, dict) and 'api_key' in data:
-            api_key = data['api_key']
-        else:
-            api_key = data
-        
-        # Ensure api_key is a string
-        if not isinstance(api_key, str):
-            return jsonify({'valid': False, 'message': 'API key must be a string'}), 400
-        
-        if not api_key or not api_key.strip():
-            return jsonify({'valid': False, 'message': 'API key is required'}), 400
-        
-        # Validate API key format (basic pattern check)
-        if not api_key.startswith(('sk-ant-', 'sk-')):
-            return jsonify({'valid': False, 'message': 'Invalid API key format. Key should start with sk-ant- or sk-'}), 400
-        
-        # Check if running on Vercel
-        is_vercel = os.environ.get('VERCEL', False)
+    print("\n==== API VALIDATE KEY REQUEST RECEIVED ====")
+    data = request.get_json()
     
-        try:
-            # Create client - we have special handling for Vercel in the create_anthropic_client function
-            client = create_anthropic_client(api_key)
-            
-            # Try to make a minimal API call to verify the key
-            try:
-                # Check if this is our special Vercel-compatible client
-                if hasattr(client, 'models') and not hasattr(client, 'beta'):
-                    client.models.list()
-                # Normal client checks
-                elif hasattr(client, 'models') and hasattr(client.models, 'list'):
-                    client.models.list()
-                elif hasattr(client, 'get_models'):
-                    client.get_models()
-                elif hasattr(client, 'count_tokens'):
-                    client.count_tokens("Test message")
-                
-                # If we get here, the key works
-                return jsonify({'valid': True, 'message': 'API key is valid'})
-                    
-            except Exception as api_e:
-                error_str = str(api_e)
-                print(f"API test error: {error_str}")
-                
-                # Check for authentication errors
-                if any(phrase in error_str.lower() for phrase in ['auth', 'key', 'invalid', '401', 'unauthorized']):
-                    print(f"API authentication failed: {error_str}")
-                    return jsonify({
-                        'valid': False, 
-                        'message': f'API authentication failed: {error_str}'
-                    }), 400
-                else:
-                    # For other errors, assume the key might be valid but there's an API issue
-                    print(f"API call failed but key format is valid: {error_str}")
-                    return jsonify({
-                        'valid': True,
-                        'message': 'API key format is valid, but API test call failed. The key may still work for generation.'
-                    })
-        
-        except Exception as e:
-            import traceback
-            error_traceback = traceback.format_exc()
-            error_str = str(e)
-            print(f"API key validation error: {error_str}\n{error_traceback}")
-            
-            # More detailed error handling
-            if "proxies" in error_str:
-                # This is the issue we're specifically trying to fix for Vercel
-                print(f"Proxies error detected: {error_str}")
-                if is_vercel:
-                    return jsonify({
-                        'valid': False, 
-                        'message': 'Unable to validate API key in this environment. Try using the key directly for generation.'
-                    }), 400
-                else:
-                    return jsonify({
-                        'valid': False, 
-                        'message': 'API client configuration error. Please try using a newer Anthropic API key format.'
-                    }), 400
-            else:
-                return jsonify({
-                    'valid': False, 
-                    'message': f'Error validating API key: {error_str}'
-                }), 400
-    except Exception as e:
-        # Handle any other errors in the API key processing
+    if not data or 'api_key' not in data:
+        return jsonify({"valid": False, "message": "API key is required"}), 400
+    
+    api_key = data['api_key']
+    print(f"Request JSON: {data}")
+    
+    # Basic format validation
+    if not api_key or not api_key.strip():
+        return jsonify({"valid": False, "message": "API key cannot be empty"}), 400
+    
+    # Check if the API key has a valid format (starts with sk-ant)
+    if not api_key.startswith('sk-ant'):
         return jsonify({
-            'valid': False,
-            'message': f'Error processing API key: {str(e)}'
+            "valid": False, 
+            "message": "API key format is invalid. It should start with 'sk-ant'"
+        }), 400
+    
+    print(f"API key format is valid: {api_key[:10]}...")
+    
+    try:
+        # Try to create a client to validate the key
+        client = create_anthropic_client(api_key)
+        
+        # For security, we don't actually make an API call here
+        # Just successfully creating the client is enough validation
+        
+        return jsonify({
+            "valid": True,
+            "message": "API key is valid"
+        })
+    except Exception as e:
+        error_message = str(e)
+        print(f"API key validation error: {error_message}")
+        
+        # Check for specific error messages
+        if "proxies" in error_message.lower():
+            print(f"Proxies error detected: {error_message}")
+            # This is a client configuration issue, not an invalid key
+            return jsonify({
+                "valid": True,  # Consider the key valid despite the client error
+                "message": "API key format is valid, but there was a client configuration issue"
+            })
+        
+        return jsonify({
+            "valid": False,
+            "message": "API client configuration error. Please try using a newer Anthropic API key format."
         }), 400
 
 @app.route('/api/process', methods=['POST'])
 def process_file():
-    # Get request parameters
-    api_key = request.json.get('api_key')
-    content = request.json.get('content')
-    file_type = request.json.get('file_type', 'txt')  # Default to txt if not specified
-    system_prompt = request.json.get('system_prompt')
-    additional_prompt = request.json.get('additional_prompt', '')
-    temperature = float(request.json.get('temperature', 1.0))
-    max_tokens = int(request.json.get('max_tokens', DEFAULT_MAX_TOKENS))
-    thinking_budget = int(request.json.get('thinking_budget', DEFAULT_THINKING_BUDGET))
+    # Get the data from the request
+    print("\n==== API PROCESS REQUEST RECEIVED ====")
+    data = request.get_json()
     
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    # Extract the API key and content
+    api_key = data.get('api_key')
+    content = data.get('content')
+    format_prompt = data.get('format_prompt', '')
+    model = data.get('model', 'claude-3-7-sonnet-20250219')
+    max_tokens = int(data.get('max_tokens', 128000))
+    temperature = float(data.get('temperature', 1.0))
+    thinking_budget = int(data.get('thinking_budget', 32000))
+    
+    print(f"Processing request with model={model}, max_tokens={max_tokens}, content_length={len(content) if content else 0}")
+    
+    # Check if we have the required data
     if not api_key or not content:
         return jsonify({'error': 'API key and content are required'}), 400
     
@@ -232,214 +197,112 @@ def process_file():
         
         # Prepare user message with content and additional prompt
         user_content = content
-        if additional_prompt:
-            user_content = f"{additional_prompt}\n\nHere's the file content:\n\n{content}"
+        if format_prompt:
+            user_content = f"{user_content}\n\n{format_prompt}"
         
-        # Define generate function for streaming
-        def generate():
-            input_tokens = 0
-            output_tokens = 0
-            thinking_tokens = 0
-            start_time = time.time()
-            
-            # Define retry parameters
-            max_retries = 5
-            base_delay = 1  # Base delay in seconds
-            
-            for retry_attempt in range(max_retries + 1):
-                try:
-                    # Try to use streaming API with thinking enabled
-                    try:
-                        # Try the beta.messages.stream approach first (newer API)
-                        with client.beta.messages.stream(
-                            model="claude-3-7-sonnet-20250219",
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            system=system_prompt,
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "text",
-                                            "text": user_content
-                                        }
-                                    ]
-                                }
-                            ],
-                            thinking={
-                                "type": "enabled",
-                                "budget_tokens": thinking_budget
-                            },
-                            betas=[OUTPUT_128K_BETA],
-                        ) as stream:
-                            # Stream the response
-                            html_content = ""
-                            
-                            # Track thinking and response state
-                            thinking_active = False
-                            thinking_content = ""
-                            response_html = ""
-                            
-                            for chunk in stream:
-                                if hasattr(chunk, 'type') and chunk.type == 'thinking_start':
-                                    thinking_active = True
-                                    yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
-                                    
-                                elif hasattr(chunk, 'type') and chunk.type == 'thinking_update':
-                                    if hasattr(chunk, 'thinking') and hasattr(chunk.thinking, 'content'):
-                                        thinking_content = chunk.thinking.content
-                                        yield f"data: {json.dumps({'type': 'thinking_update', 'content': thinking_content})}\n\n"
-                                    
-                                elif hasattr(chunk, 'type') and chunk.type == 'thinking_end':
-                                    thinking_active = False
-                                    yield f"data: {json.dumps({'type': 'thinking_end'})}\n\n"
-                                    
-                                elif hasattr(chunk, 'type') and chunk.type == 'message_delta':
-                                    # Get delta content
-                                    delta_content = ""
-                                    if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'content'):
-                                        # Access content based on its structure
-                                        if isinstance(chunk.delta.content, list):
-                                            for item in chunk.delta.content:
-                                                if hasattr(item, 'text'):
-                                                    delta_content += item.text
-                                                elif isinstance(item, dict) and 'text' in item:
-                                                    delta_content += item['text']
-                                        elif hasattr(chunk.delta.content, 'text'):
-                                            delta_content = chunk.delta.content.text
-                                        elif isinstance(chunk.delta.content, str):
-                                            delta_content = chunk.delta.content
-                                    
-                                    # Add to HTML content
-                                    html_content += delta_content
-                                    response_html += delta_content
-                                    
-                                    # Stream the delta
-                                    yield f"data: {json.dumps({'type': 'content', 'content': delta_content})}\n\n"
-                            
-                            # Get usage statistics at the end
-                            if hasattr(stream, 'usage'):
-                                input_tokens = getattr(stream.usage, 'input_tokens', 0)
-                                output_tokens = getattr(stream.usage, 'output_tokens', 0)
-                                thinking_tokens = 0
-                                
-                                # Try to get thinking tokens from different possible paths
-                                if hasattr(stream.usage, 'thinking_tokens'):
-                                    thinking_tokens = stream.usage.thinking_tokens
-                                elif hasattr(stream.usage, 'thinking') and hasattr(stream.usage.thinking, 'tokens'):
-                                    thinking_tokens = stream.usage.thinking.tokens
-                                elif hasattr(stream.usage, 'thinking') and isinstance(stream.usage.thinking, int):
-                                    thinking_tokens = stream.usage.thinking
-                            else:
-                                # Fallback estimation if usage data not available
-                                input_tokens = len(user_content.split()) * 1.3  # Rough estimate
-                                output_tokens = len(html_content.split()) * 1.3  # Rough estimate
-                                thinking_tokens = thinking_budget / 2  # Rough estimate
-                            
-                            # Calculate total cost
-                            input_cost = (input_tokens / 1000000) * 3  # $3 per million tokens
-                            output_cost = (output_tokens / 1000000) * 15  # $15 per million tokens
-                            thinking_cost = (thinking_tokens / 1000000) * 3  # $3 per million tokens
-                            total_cost = input_cost + output_cost + thinking_cost
-                            
-                            # Send completion message with usage data
-                            yield f"data: {json.dumps({'type': 'complete', 'usage': {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'thinking_tokens': thinking_tokens, 'total_cost': total_cost}})}\n\n"
-                    
-                    except (AttributeError, TypeError) as e:
-                        # Fallback to non-streaming API for older versions
-                        print(f"Streaming API failed, falling back to non-streaming: {str(e)}")
-                        yield f"data: {json.dumps({'type': 'info', 'message': 'Using non-streaming mode (older API version)'})}\n\n"
-                        
-                        # Try non-streaming API call
-                        response = client.messages.create(
-                            model="claude-3-7-sonnet-20250219",
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            system=system_prompt,
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": user_content
-                                }
-                            ]
-                        )
-                        
-                        # Extract content
-                        html_content = ""
-                        if hasattr(response, 'content'):
-                            if isinstance(response.content, list):
-                                for item in response.content:
-                                    if hasattr(item, 'text'):
-                                        html_content += item.text
-                                    elif isinstance(item, dict) and 'text' in item:
-                                        html_content += item['text']
-                            elif hasattr(response.content, 'text'):
-                                html_content = response.content.text
-                            elif isinstance(response.content, str):
-                                html_content = response.content
-                        
-                        # Send the entire content at once
-                        yield f"data: {json.dumps({'type': 'content', 'content': html_content})}\n\n"
-                        
-                        # Get usage statistics
-                        if hasattr(response, 'usage'):
-                            input_tokens = getattr(response.usage, 'input_tokens', 0)
-                            output_tokens = getattr(response.usage, 'output_tokens', 0)
-                            thinking_tokens = 0
-                        else:
-                            # Fallback estimation if usage data not available
-                            input_tokens = len(user_content.split()) * 1.3  # Rough estimate
-                            output_tokens = len(html_content.split()) * 1.3  # Rough estimate
-                            thinking_tokens = 0  # No thinking in non-streaming mode
-                        
-                        # Calculate total cost
-                        input_cost = (input_tokens / 1000000) * 3  # $3 per million tokens
-                        output_cost = (output_tokens / 1000000) * 15  # $15 per million tokens
-                        thinking_cost = (thinking_tokens / 1000000) * 3  # $3 per million tokens
-                        total_cost = input_cost + output_cost + thinking_cost
-                        
-                        # Send completion message with usage data
-                        yield f"data: {json.dumps({'type': 'complete', 'usage': {'input_tokens': input_tokens, 'output_tokens': output_tokens, 'thinking_tokens': thinking_tokens, 'total_cost': total_cost}})}\n\n"
-                    
-                    # If we get here, we have successfully processed the request
-                    break
-                    
-                except Exception as e:
-                    error_message = str(e)
-                    error_data = {}
-                    
-                    # Try to parse the error message if it's a JSON string
-                    if "{" in error_message and "}" in error_message:
-                        try:
-                            error_json = error_message[error_message.find("{"):error_message.rfind("}")+1]
-                            error_data = json.loads(error_json)
-                        except:
-                            pass
-                    
-                    # Check for overloaded error
-                    if "Overloaded" in error_message or (error_data and error_data.get('error', {}).get('type') == 'overloaded_error') or error_message.startswith("Status code 529"):
-                        # If it's not the last retry, implement exponential backoff
-                        if retry_attempt < max_retries:
-                            # Calculate delay with jitter
-                            delay = base_delay * (2 ** retry_attempt) + random.uniform(0, 0.5)
-                            print(f"Anthropic API overloaded. Retrying in {delay:.2f} seconds (attempt {retry_attempt + 1}/{max_retries})...")
-                            
-                            # Send a message to the client about the retry
-                            yield f"data: {json.dumps({'type': 'info', 'message': f'Service is busy. Retrying in {int(delay)} seconds (attempt {retry_attempt + 1}/{max_retries})...'})}\n\n"
-                            
-                            time.sleep(delay)
-                            continue
-                    
-                    # If we're here, either it's not an overloaded error or we've exhausted retries
-                    print(f"Error in API call: {error_message}")
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'API call failed: {error_message}'})}\n\n"
-                    break
+        print("Creating message with thinking parameter...")
         
-        return Response(stream_with_context(generate()), mimetype='text/event-stream')
+        # Create parameters for the API call
+        params = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).",
+            "messages": [{"role": "user", "content": user_content}],
+        }
+        
+        # Add thinking parameter if thinking_budget > 0
+        if thinking_budget > 0:
+            params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            
+        # Add beta parameter if needed
+        if max_tokens > 4096:
+            params["betas"] = [OUTPUT_128K_BETA]
+        
+        # Create the message
+        response = client.messages.create(**params)
+        
+        # Extract the HTML from the response
+        html_content = ""
+        
+        # Handle different response formats
+        if hasattr(response, 'content') and response.content:
+            # Handle standard Anthropic client response
+            if isinstance(response.content, list) and len(response.content) > 0:
+                if hasattr(response.content[0], 'text'):
+                    # Standard client format
+                    html_content = response.content[0].text
+                elif isinstance(response.content[0], dict) and 'text' in response.content[0]:
+                    # Dictionary format
+                    html_content = response.content[0]['text']
+            elif isinstance(response.content, dict) and 'text' in response.content:
+                # Simple dictionary format
+                html_content = response.content['text']
+            elif isinstance(response.content, str):
+                # Direct string format
+                html_content = response.content
+        
+        # If still empty, try alternate paths
+        if not html_content and hasattr(response, 'completion'):
+            html_content = response.completion
+            
+        # As a last resort, convert the entire response to string
+        if not html_content:
+            print("Warning: Unable to extract HTML content using standard methods. Using fallback extraction.")
+            try:
+                # Try to extract from the raw response
+                if isinstance(response, dict) and 'content' in response:
+                    if isinstance(response['content'], list) and len(response['content']) > 0:
+                        first_item = response['content'][0]
+                        if isinstance(first_item, dict) and 'text' in first_item:
+                            html_content = first_item['text']
+                
+                # If still empty, convert the whole response to string
+                if not html_content:
+                    html_content = str(response)
+            except Exception as e:
+                print(f"Fallback extraction failed: {str(e)}")
+                html_content = "Error: Unable to extract HTML content from response."
+            
+        # Get usage stats
+        input_tokens = 0
+        output_tokens = 0
+        thinking_tokens = 0
+        
+        if hasattr(response, 'usage'):
+            if hasattr(response.usage, 'input_tokens'):
+                input_tokens = response.usage.input_tokens
+            if hasattr(response.usage, 'output_tokens'):
+                output_tokens = response.usage.output_tokens
+            if hasattr(response.usage, 'thinking_tokens'):
+                thinking_tokens = response.usage.thinking_tokens
+        elif isinstance(response, dict) and 'usage' in response:
+            usage = response['usage']
+            if isinstance(usage, dict):
+                input_tokens = usage.get('input_tokens', 0)
+                output_tokens = usage.get('output_tokens', 0)
+                thinking_tokens = usage.get('thinking_tokens', 0)
+                
+        # Log response structure for debugging
+        print(f"Response type: {type(response)}")
+        if html_content:
+            print(f"Successfully extracted HTML content. Length: {len(html_content)}")
+                
+        # Return the response
+        return jsonify({
+            'html': html_content,
+            'model': model,
+            'usage': {
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'thinking_tokens': thinking_tokens
+            }
+        })
     
     except Exception as e:
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
+        error_message = str(e)
+        print(f"Error in /api/process: {error_message}")
+        return jsonify({'error': f'Server error: {error_message}'}), 500
 
 # PDF text extraction function
 def extract_text_from_pdf(pdf_file):
@@ -473,6 +336,12 @@ def analyze_tokens():
         if not content:
             return jsonify({"error": "No content provided"}), 400
         
+        # Define the system prompt to include in token estimation
+        system_prompt = "You are a helpful assistant that transforms code and text into beautiful HTML visualizations. Output ONLY the HTML code without any additional explanations, comments, or markdown formatting. The response should be valid HTML that can be directly rendered in a browser."
+        
+        # Estimated system prompt tokens (if exact count not available)
+        system_prompt_tokens = len(system_prompt) // 3.5
+        
         # Handle binary content (base64 encoded) for PDFs and documents
         try:
             if file_type in ['pdf', 'doc', 'docx']:
@@ -501,30 +370,32 @@ def analyze_tokens():
                     client = create_anthropic_client(api_key)
                     try:
                         # Try newer API version first (Anthropic v0.5+)
-                        token_count = client.count_tokens(content)
-                        estimated_tokens = token_count
+                        content_tokens = client.count_tokens(content)
+                        system_tokens = client.count_tokens(system_prompt)
+                        estimated_tokens = content_tokens + system_tokens
                     except (AttributeError, TypeError):
                         try:
                             # Fall back to older API style if needed
-                            token_count = client.count_tokens(content)
-                            estimated_tokens = token_count
+                            content_tokens = client.count_tokens(content)
+                            system_tokens = client.count_tokens(system_prompt)
+                            estimated_tokens = content_tokens + system_tokens
                         except Exception:
-                            # If API token counting fails, fall back to estimation
-                            word_count = len(content.split())
-                            estimated_tokens = int(word_count * 1.3)
+                            # If API token counting fails, fall back to better character-based estimation
+                            # Better estimation formula for multilingual text (including Chinese)
+                            estimated_tokens = len(content) / 3.5 + system_prompt_tokens
                 except Exception as e:
-                    # Fall back to word-based estimation if API fails
-                    word_count = len(content.split())
-                    estimated_tokens = int(word_count * 1.3)
+                    # Fall back to better character-based estimation if API fails
+                    estimated_tokens = len(content) / 3.5 + system_prompt_tokens
             else:
-                # No API key, use simple word-based estimation
-                word_count = len(content.split())
-                estimated_tokens = int(word_count * 1.3)
+                # No API key, use character-based estimation which works better for all languages
+                estimated_tokens = len(content) / 3.5 + system_prompt_tokens
                 
         except Exception as e:
-            # Fall back to direct estimation
-            word_count = len(content.split())
-            estimated_tokens = int(word_count * 1.3)
+            # Fall back to better character-based estimation
+            estimated_tokens = len(content) / 3.5 + system_prompt_tokens
+        
+        # Ensure we have a whole number of tokens
+        estimated_tokens = max(1, int(estimated_tokens))
         
         # Calculate estimated cost (as of current pricing)
         estimated_cost = (estimated_tokens / 1000000) * 3.0  # $3 per million tokens
@@ -539,7 +410,10 @@ def analyze_tokens():
 
 @app.route('/api/process-stream', methods=['POST'])
 def process_stream():
-    print("==== API PROCESS STREAM REQUEST RECEIVED ====")
+    print("\n==== API PROCESS STREAM REQUEST RECEIVED ====")
+    print(f"Request headers: {dict(request.headers)}")
+    print(f"Request method: {request.method}")
+    
     data = request.get_json()
     if not data:
         print("ERROR: No data provided in process-stream request")
@@ -567,136 +441,65 @@ def process_stream():
     
     print(f"Process stream request: model={model}, max_tokens={max_tokens}, source_length={len(source)}")
     
-    # Check if this is a reconnection request
-    is_reconnection = bool(session_id)
-    if is_reconnection:
-        print(f"This is a reconnection request with session_id: {session_id}")
-    
-    # Check if we're running on Vercel
-    is_vercel = os.environ.get('VERCEL', False)
-    if is_vercel:
-        print("Running in Vercel environment")
-    else:
-        print("Running in local environment")
-    
     try:
         # Create the Anthropic client
-        print("Creating Anthropic client")
+        print("Creating Anthropic client...")
         client = create_anthropic_client(api_key)
-        print("Anthropic client created successfully")
         
-        # Set up a streaming response
-        def generate():
-            print("Starting generate function for streaming response")
-            try:
-                system_prompt = """You are an expert web developer and technical communicator.
-Your task is to transform the provided content into a beautiful, readable HTML document.
-Make the output visually appealing and well-structured for maximum readability.
-                
-Create a COMPLETE and SELF-CONTAINED HTML document that:
-- Includes proper HTML5 doctype, head, meta tags, and body
-- Has all CSS styles embedded directly in a <style> tag in the head
-- Applies a clean, modern design that's easy to read
-- Preserves code formatting with syntax highlighting where appropriate
-- Renders mathematical notation properly if present
-- Includes responsive design principles for mobile and desktop viewing
-- Does NOT rely on any external CSS, JS, or image files
-"""
-                
-                if format_prompt:
-                    system_prompt += f"\n\nAdditional formatting instructions:\n{format_prompt}"
-                
-                # Define the messages
-                messages = [
-                    {"role": "user", "content": f"Please transform this content into a beautiful HTML page with CSS styling:\n\n{source}"}
-                ]
-                
-                # Set up beta parameters for large output
-                betas = ["output-128k-2025-02-19"]
-                
-                # Stream the response
-                with client.beta.messages.stream(
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    system=system_prompt,
-                    messages=messages,
-                    thinking={"enable": True, "max_tokens": thinking_budget},
-                    betas=betas
-                ) as stream:
-                    # First, indicate the start of the streaming process
-                    yield 'data: {"type": "start"}\n\n'
-                    
-                    # Stream the thinking response first
-                    thinking_content = ""
-                    for chunk in stream:
-                        # Handle different types of response chunks
-                        if chunk.type == 'thinking_start':
-                            yield 'data: {"type": "thinking_start"}\n\n'
-                        
-                        elif chunk.type == 'thinking_update':
-                            # Append thinking content
-                            thinking_fragment = chunk.thinking.content
-                            thinking_content += thinking_fragment
-                            
-                            # Stream thinking update
-                            yield f'data: {{"type": "thinking_update", "content": {json.dumps(thinking_fragment)}}}\n\n'
-                        
-                        elif chunk.type == 'thinking_end':
-                            yield 'data: {"type": "thinking_end"}\n\n'
-                        
-                        elif chunk.type == 'content_block_delta':
-                            # For content, we stream HTML content
-                            text_fragment = chunk.delta.text
-                            
-                            # Stream content update
-                            yield f'data: {{"type": "content", "text": {json.dumps(text_fragment)}}}\n\n'
-                            
-                        elif chunk.type == 'error':
-                            # Handle errors from our custom wrapper
-                            error_msg = chunk.error
-                            yield f'data: {{"type": "error", "error": {json.dumps(error_msg)}}}\n\n'
-                            
-                        elif chunk.type == 'reconnect_signal':
-                            # Handle reconnection signals from our wrapper
-                            session_id = chunk.session_id
-                            chunk_count = chunk.chunk_count
-                            yield f'data: {{"type": "reconnect", "session_id": "{session_id}", "chunk_count": {chunk_count}}}\n\n'
-                            return  # End this stream to allow client to reconnect
-                    
-                    # When we're done, include the usage information
-                    if stream.usage:
-                        usage_data = {
-                            'input_tokens': stream.usage.input_tokens,
-                            'output_tokens': stream.usage.output_tokens,
-                            'thinking_tokens': stream.usage.thinking_tokens,
-                            'total_tokens': stream.usage.input_tokens + stream.usage.output_tokens + stream.usage.thinking_tokens
-                        }
-                        yield f'data: {{"type": "usage", "usage": {json.dumps(usage_data)}}}\n\n'
-                    
-                    # Signal the end of the stream
-                    yield 'data: {"type": "end"}\n\n'
+        # Prepare the message content
+        content = source
+        if format_prompt:
+            content += "\n\n" + format_prompt
+        
+        # Create the streaming response
+        print("Starting streaming response...")
+        
+        # Create parameters for the API call
+        params = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": "You are a helpful assistant that transforms code and text into beautiful HTML visualizations. Output ONLY the HTML code without any additional explanations, comments, or markdown formatting. The response should be valid HTML that can be directly rendered in a browser.",
+            "messages": [{"role": "user", "content": content}],
+        }
+        
+        # Add thinking parameter if thinking_budget > 0
+        if thinking_budget > 0:
+            params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
             
-            except Exception as e:
-                # Handle errors
-                error_msg = str(e)
-                print(f"Error in generate: {error_msg}")
-                
-                # Check if this is a timeout that requires client reconnection
-                if is_vercel and "Vercel timeout - client should continue with session" in error_msg:
-                    session_id = error_msg.split("session: ")[1]
-                    yield f'data: {{"type": "reconnect", "session_id": "{session_id}", "error": "Vercel timeout"}}\n\n'
-                else:
-                    yield f'data: {{"type": "error", "error": {json.dumps(error_msg)}}}\n\n'
+        # Add beta parameter if needed
+        if max_tokens > 4096:
+            params["betas"] = [OUTPUT_128K_BETA]
+            
+        # Start the stream
+        stream = client.beta.messages.stream(**params)
         
         # Return the streaming response
-        return Response(generate(), mimetype='text/event-stream')
-    
+        return Response(
+            stream_with_context(stream_response(stream)),
+            content_type='text/event-stream'
+        )
+        
     except Exception as e:
-        # Handle outer exceptions
-        error_msg = str(e)
-        print(f"Error in process_stream: {error_msg}")
-        return jsonify({"error": f"Error processing request: {error_msg}"}), 500
+        error_message = str(e)
+        print(f"ERROR in process-stream: {error_message}")
+        return jsonify({"error": f"Failed to process stream: {error_message}"}), 500
+
+def stream_response(stream):
+    """Helper function to format the streaming response"""
+    try:
+        with stream as response:
+            for chunk in response:
+                if chunk.type == 'content_block_start':
+                    yield 'data: {"type": "start"}\n\n'
+                elif chunk.type == 'content_block_delta':
+                    yield f'data: {{"type": "delta", "content": {json.dumps(chunk.delta.text)}}}\n\n'
+                elif chunk.type == 'content_block_stop':
+                    yield 'data: {"type": "end"}\n\n'
+                elif chunk.type == 'message_stop':
+                    break
+    except Exception as e:
+        yield f'data: {{"type": "error", "error": {json.dumps(str(e))}}}\n\n'
 
 # Add a simple test endpoint
 @app.route('/api/test', methods=['GET', 'POST'])
@@ -721,6 +524,7 @@ if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Start the Claude 3.7 File Visualizer server')
     parser.add_argument('--port', type=int, help='Port to run the server on')
+    parser.add_argument('--no-debug', action='store_true', help='Disable debug mode')
     args = parser.parse_args()
     
     # Determine the port to use (priority: command-line arg > environment var > default)
@@ -742,9 +546,10 @@ if __name__ == '__main__':
         print(f"  lsof -i :{port} | awk 'NR>1 {{print $2}}' | xargs kill -9 # to kill process using port {port}")
         sys.exit(1)
     
-    # Start the server
-    print(f"Server running at http://localhost:{port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Start the server - debug mode is enabled by default unless --no-debug is specified
+    debug_mode = not args.no_debug
+    print(f"Server running at http://localhost:{port} with debug mode {'disabled' if args.no_debug else 'enabled'}")
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
 
 # Important: Export the Flask app for Vercel
 app

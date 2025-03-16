@@ -6,55 +6,36 @@ import requests
 import time
 
 def create_anthropic_client(api_key):
-    """
-    Create an Anthropic client that is compatible with both local and Vercel environments.
-    For Vercel, we use a completely different approach to avoid the proxies issue.
-    """
+    """Create an Anthropic client with the given API key."""
+    print(f"Creating Anthropic client with API key: {api_key[:8]}...")
+    
+    # Check if API key is valid format
     if not api_key or not api_key.strip():
         raise ValueError("API key cannot be empty")
     
-    # Check if running on Vercel
-    is_vercel = os.environ.get('VERCEL', False)
-    
-    # Special handling for Vercel environment
-    if is_vercel:
-        return VercelCompatibleClient(api_key)
-    
-    # Local environment - use standard approach
+    # Try to create the client with the standard approach first
     try:
-        # For newer versions of the anthropic library
-        if hasattr(anthropic, 'Anthropic'):
-            # Create client with only the essential parameter (no proxies)
-            kwargs = {"api_key": api_key}
-            return anthropic.Anthropic(**kwargs)
+        # Create client with only the essential parameter
+        client = anthropic.Anthropic(api_key=api_key)
         
-        # For older versions of the anthropic library
-        elif hasattr(anthropic, 'Client'):
-            # Create client with only the essential parameter (no proxies)
-            kwargs = {"api_key": api_key}
-            return anthropic.Client(**kwargs)
-        
-        # Last resort fallbacks
-        else:
-            # Try to import classes directly
-            try:
-                # Try newer class
-                from anthropic import Anthropic
-                return Anthropic(api_key=api_key)
-            except (ImportError, AttributeError):
-                try:
-                    # Try older class
-                    from anthropic import Client
-                    return Client(api_key=api_key)
-                except (ImportError, AttributeError):
-                    raise ImportError("Could not import Anthropic or Client class")
+        # Test a simple call to verify the client works
+        try:
+            # Try a simple call that doesn't cost tokens
+            client.count_tokens("Test")
+            return client
+        except Exception as e:
+            print(f"Warning: Token counting failed but client might still work: {str(e)}")
+            return client
+            
     except Exception as e:
-        # Provide detailed error information
-        if "proxies" in str(e):
-            raise Exception(f"API client error: The Anthropic library version has a compatibility issue. Error: {str(e)}")
-        elif "auth" in str(e).lower() or "key" in str(e).lower() or "invalid" in str(e).lower():
-            raise Exception(f"API authentication failed: {str(e)}")
-        else:
+        print(f"Standard client creation failed: {str(e)}")
+        
+        # Try the fallback client approach
+        try:
+            print("Using custom Anthropic client implementation")
+            return VercelCompatibleClient(api_key)
+        except Exception as e2:
+            print(f"Custom client also failed: {str(e2)}")
             raise Exception(f"Failed to create Anthropic client: {str(e)}")
 
 # Special client class for Vercel that doesn't use the standard Anthropic library
@@ -71,6 +52,20 @@ class VercelCompatibleClient:
         # Add beta and messages namespaces for compatibility
         self.beta = self._BetaNamespace(self)
         self.messages = self._MessagesNamespace(self)
+    
+    def post(self, url, json=None, headers=None, timeout=None):
+        """Send a POST request to the specified URL with the given JSON data."""
+        _headers = dict(self.headers)
+        if headers:
+            _headers.update(headers)
+        
+        response = requests.post(
+            url,
+            json=json,
+            headers=_headers,
+            timeout=timeout or 120
+        )
+        return response
     
     def models(self):
         # Lightweight method to check if the API key is valid
@@ -107,7 +102,7 @@ class VercelCompatibleClient:
             def __init__(self, client):
                 self.client = client
             
-            def stream(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None):
+            def stream(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None, beta=None):
                 """
                 Stream the response from the Anthropic API directly with improved timeout handling
                 for Vercel environment. Uses a stateful approach that supports reconnection.
@@ -150,14 +145,33 @@ class VercelCompatibleClient:
                     "stream": True
                 }
                 
-                # Add thinking if specified
+                # Add thinking parameter if provided
                 if thinking:
-                    payload["thinking"] = thinking
+                    # Handle both new and old thinking parameter formats
+                    if isinstance(thinking, dict) and "type" in thinking and thinking["type"] == "enabled":
+                        # New format with 'type' and 'budget_tokens'
+                        payload["thinking"] = thinking
+                    elif isinstance(thinking, dict) and "enabled" in thinking:
+                        # Old format with just 'enabled'
+                        payload["thinking"] = {
+                            "type": "enabled",
+                            "budget_tokens": thinking.get("budget_tokens", 32000)
+                        }
+                    else:
+                        # Default to enabled with a budget
+                        payload["thinking"] = {
+                            "type": "enabled",
+                            "budget_tokens": 32000
+                        }
                 
                 # Add beta features if specified - Fixed to use the correct format
-                # The Anthropic API expects beta features to be in the 'anthropic-beta' header
+                # The Anthropic API expects beta features in the 'anthropic-beta' header
                 headers = dict(self.client.headers)
-                if betas and isinstance(betas, list) and len(betas) > 0:
+                
+                # Handle both beta and betas parameters
+                if beta:
+                    headers["anthropic-beta"] = beta
+                elif betas and isinstance(betas, list) and len(betas) > 0:
                     headers["anthropic-beta"] = ",".join(betas)
                 
                 # For Vercel, reduce the expected response timeout and add retry mechanism
@@ -212,11 +226,11 @@ class VercelCompatibleClient:
         def __init__(self, client):
             self.client = client
         
-        def create(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None):
+        def create(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None, beta=None):
             """
-            Create a message using the Anthropic API directly (non-streaming)
+            Create a message with the Anthropic API directly.
             """
-            # Convert messages to API format (similar to streaming version)
+            # Convert messages to API format
             formatted_messages = []
             for msg in messages:
                 formatted_message = {"role": msg["role"]}
@@ -247,38 +261,59 @@ class VercelCompatibleClient:
                 "messages": formatted_messages
             }
             
-            # Add thinking if specified
+            # Add thinking parameter if provided
             if thinking:
-                payload["thinking"] = thinking
-                
-            # Add beta features if specified - Fixed to use the correct format
-            # The Anthropic API expects beta features to be in the 'anthropic-beta' header
+                # Handle both new and old thinking parameter formats
+                if isinstance(thinking, dict) and "type" in thinking and thinking["type"] == "enabled":
+                    # New format with 'type' and 'budget_tokens'
+                    payload["thinking"] = thinking
+                elif isinstance(thinking, dict) and "enabled" in thinking:
+                    # Old format with just 'enabled'
+                    payload["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": thinking.get("budget_tokens", 32000)
+                    }
+                else:
+                    # Default to enabled with a budget
+                    payload["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": 32000
+                    }
+            
+            # Add beta features if specified
             headers = dict(self.client.headers)
-            if betas and isinstance(betas, list) and len(betas) > 0:
+            
+            # Handle both beta and betas parameters
+            if beta:
+                headers["anthropic-beta"] = beta
+            elif betas and isinstance(betas, list) and len(betas) > 0:
                 headers["anthropic-beta"] = ",".join(betas)
-            
-            # Make the API request
-            response = requests.post(
-                f"{self.client.base_url}/messages",
-                headers=headers,
-                json=payload
-            )
-            
-            if response.status_code != 200:
-                # Handle error
-                try:
-                    error_json = response.json()
-                    error_msg = error_json.get('error', {}).get('message', response.text)
-                except Exception:
-                    error_msg = response.text
                 
-                raise Exception(f"API request failed: {error_msg}")
-            
-            # Parse the response
-            result = response.json()
-            
-            # Create a response object that mimics the Anthropic client response
-            return VercelMessageResponse(result)
+            # Make the API request using requests directly to avoid method call issues
+            try:
+                print("Making direct API request to Anthropic...")
+                response = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=600  # Increased timeout for large responses
+                )
+                
+                # Check for errors
+                if response.status_code != 200:
+                    error_message = f"Request error: API error {response.status_code}: {response.text}"
+                    print(f"Error in message creation: {error_message}")
+                    raise Exception(f"Message creation failed: {error_message}")
+                
+                # Parse the response
+                result = response.json()
+                
+                # Return a formatted response object
+                return VercelMessageResponse(result)
+                
+            except Exception as e:
+                print(f"Error in message creation: {str(e)}")
+                raise Exception(f"Message creation failed: {str(e)}")
 
 # Wrapper for the streaming response
 class VercelStreamingResponse:
@@ -461,7 +496,7 @@ class VercelMessageResponse:
         self.usage = self._UsageInfo(
             result.get('usage', {}).get('input_tokens', 0),
             result.get('usage', {}).get('output_tokens', 0),
-            0  # Non-streaming doesn't support thinking tokens
+            result.get('usage', {}).get('thinking_tokens', 0)
         )
     
     def _format_content(self, content):
@@ -478,7 +513,7 @@ class VercelMessageResponse:
             return [{'type': 'text', 'text': content}]
         else:
             # Default fallback
-            return content
+            return [{'type': 'text', 'text': str(content) if content else ''}]
     
     class _UsageInfo:
         def __init__(self, input_tokens, output_tokens, thinking_tokens):
