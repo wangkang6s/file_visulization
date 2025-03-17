@@ -305,23 +305,6 @@ def process_file():
         print(f"Error in /api/process: {error_message}")
         return jsonify({'error': f'Server error: {error_message}'}), 500
 
-# PDF text extraction function
-def extract_text_from_pdf(pdf_file):
-    text = ""
-    try:
-        reader = PyPDF2.PdfReader(io.BytesIO(pdf_file))
-        for page_num in range(len(reader.pages)):
-            page = reader.pages[page_num]
-            text += page.extract_text() + "\n\n"
-        return text
-    except Exception as e:
-        raise Exception(f"Failed to extract text from PDF: {str(e)}")
-
-# Word document text extraction function        
-def extract_text_from_docx(docx_file):
-    doc = docx.Document(io.BytesIO(docx_file))
-    return "\n".join([paragraph.text for paragraph in doc.paragraphs])
-
 @app.route('/api/analyze-tokens', methods=['POST'])
 def analyze_tokens():
     try:
@@ -329,74 +312,82 @@ def analyze_tokens():
         if not data:
             return jsonify({"error": "No data provided"}), 400
         
-        # Get content from request
+        print(f"Analyzing tokens for data of size: {len(str(data))}")
+        
         content = data.get('content', '')
-        file_type = data.get('file_type', 'txt')
-        api_key = data.get('api_key', '')  # Get API key if available
-        
         if not content:
-            return jsonify({"error": "No content provided"}), 400
+            content = data.get('source', '')
+            
+        file_type = data.get('file_type', 'txt')
         
-        # Define the system prompt to include in token estimation
-        system_prompt = "You are a helpful assistant that transforms code and text into beautiful HTML visualizations. Output ONLY the HTML code without any additional explanations, comments, or markdown formatting. The response should be valid HTML that can be directly rendered in a browser."
+        # Handle PDF files (which are sent as base64)
+        if file_type == 'pdf':
+            # Recognize base64 data (could start with data:application/pdf;base64, or just be raw base64)
+            if ';base64,' in content:
+                # Extract the base64 part
+                content = content.split(';base64,')[1]
+            
+            try:
+                # Decode base64
+                pdf_data = base64.b64decode(content)
+                
+                # Create a file-like object
+                pdf_file = io.BytesIO(pdf_data)
+                
+                # Extract text from the PDF
+                reader = PyPDF2.PdfReader(pdf_file)
+                text_content = ""
+                
+                # Extract text from each page
+                for page_num in range(len(reader.pages)):
+                    text_content += reader.pages[page_num].extract_text() + "\n"
+                
+                # Use the extracted text for token analysis
+                content = text_content
+                
+            except Exception as e:
+                return jsonify({"error": f"Error processing PDF: {str(e)}"}), 400
+        
+        # Handle DOCX files
+        elif file_type in ['docx', 'doc']:
+            try:
+                # Decode base64
+                docx_data = base64.b64decode(content)
+                
+                # Create a file-like object
+                docx_file = io.BytesIO(docx_data)
+                
+                # Extract text from the DOCX
+                doc = docx.Document(docx_file)
+                text_content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                
+                # Use the extracted text for token analysis
+                content = text_content
+                
+            except Exception as e:
+                return jsonify({"error": f"Error processing DOCX: {str(e)}"}), 400
+        
+        # If no content after processing, return an error
+        if not content:
+            return jsonify({"error": "No content to analyze"}), 400
+        
+        # Define the system prompt to include in token estimation - Use the same prompt as for generation
+        system_prompt = """
+        You are a professional web developer helping to create a beautiful and functional static HTML website.
+        The user will provide either text content or file contents, and you will generate a complete, self-contained HTML website.
+        The website should be styled attractively with modern CSS and should not rely on external libraries unless specifically requested.
+        Ensure that the HTML, CSS, and any JavaScript is complete, valid, and ready to use without external dependencies.
+        The generated website should follow responsive design principles and work well on both desktop and mobile devices.
+        """
         
         # Estimated system prompt tokens (if exact count not available)
-        system_prompt_tokens = len(system_prompt) // 3.5
+        system_prompt_tokens = len(system_prompt) // 3
         
-        # Handle binary content (base64 encoded) for PDFs and documents
-        try:
-            if file_type in ['pdf', 'doc', 'docx']:
-                # Try to decode base64 if it looks like base64
-                try:
-                    # Decode base64 to binary
-                    binary_content = base64.b64decode(content)
-                    
-                    # Extract text based on file type
-                    if file_type == 'pdf':
-                        text_content = extract_text_from_pdf(binary_content)
-                    elif file_type in ['doc', 'docx']:
-                        text_content = extract_text_from_docx(binary_content)
-                    else:
-                        text_content = binary_content.decode('utf-8', errors='ignore')
-                    
-                    # Use the extracted text for analysis
-                    content = text_content
-                except Exception as e:
-                    # Fall back to the original content if decoding fails
-                    pass
-            
-            # Try to get a more accurate token count using the Anthropic API if API key is provided
-            if api_key:
-                try:
-                    client = create_anthropic_client(api_key)
-                    try:
-                        # Try newer API version first (Anthropic v0.5+)
-                        content_tokens = client.count_tokens(content)
-                        system_tokens = client.count_tokens(system_prompt)
-                        estimated_tokens = content_tokens + system_tokens
-                    except (AttributeError, TypeError):
-                        try:
-                            # Fall back to older API style if needed
-                            content_tokens = client.count_tokens(content)
-                            system_tokens = client.count_tokens(system_prompt)
-                            estimated_tokens = content_tokens + system_tokens
-                        except Exception:
-                            # If API token counting fails, fall back to better character-based estimation
-                            # Better estimation formula for multilingual text (including Chinese)
-                            estimated_tokens = len(content) / 3.5 + system_prompt_tokens
-                except Exception as e:
-                    # Fall back to better character-based estimation if API fails
-                    estimated_tokens = len(content) / 3.5 + system_prompt_tokens
-            else:
-                # No API key, use character-based estimation which works better for all languages
-                estimated_tokens = len(content) / 3.5 + system_prompt_tokens
-                
-        except Exception as e:
-            # Fall back to better character-based estimation
-            estimated_tokens = len(content) / 3.5 + system_prompt_tokens
+        # Estimate tokens in content
+        content_tokens = len(content) // 4
         
-        # Ensure we have a whole number of tokens
-        estimated_tokens = max(1, int(estimated_tokens))
+        # Total estimated tokens
+        estimated_tokens = system_prompt_tokens + content_tokens
         
         # Calculate estimated cost (as of current pricing)
         estimated_cost = (estimated_tokens / 1000000) * 3.0  # $3 per million tokens

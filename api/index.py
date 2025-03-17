@@ -173,25 +173,51 @@ def validate_key():
         data = request.get_json()
         api_key = data.get('api_key')
         
+        # If no API key is provided
+        if not api_key:
+            return jsonify({
+                "valid": False,
+                "message": "No API key provided"
+            })
+        
         # Import here to avoid loading at module level
-        from anthropic import Anthropic
+        try:
+            from anthropic import Anthropic
+        except ImportError as e:
+            return jsonify({
+                "valid": False,
+                "message": f"Error importing Anthropic: {str(e)}"
+            })
         
         # Initialize the Anthropic client with the API key
-        client = Anthropic(api_key=api_key)
+        try:
+            client = Anthropic(api_key=api_key)
+        except Exception as e:
+            return jsonify({
+                "valid": False,
+                "message": f"Error initializing Anthropic client: {str(e)}"
+            })
         
         # Try a simple API call to validate the key
-        models = client.models.list()
-        
-        return jsonify({
-            "valid": True,
-            "message": "API key is valid",
-            "models": [model.id for model in models.data]
-        })
+        try:
+            models = client.models.list()
+            
+            return jsonify({
+                "valid": True,
+                "message": "API key is valid",
+                "models": [model.id for model in models.data]
+            })
+        except Exception as e:
+            error_message = str(e)
+            return jsonify({
+                "valid": False,
+                "message": f"API key validation failed: {error_message}"
+            })
     except Exception as e:
-        error_message = str(e)
+        # Catch-all for any other errors
         return jsonify({
             "valid": False,
-            "message": f"API key validation failed: {error_message}"
+            "message": f"Server error during validation: {str(e)}"
         })
 
 @flask_app.route('/api/analyze-tokens', methods=['POST'])
