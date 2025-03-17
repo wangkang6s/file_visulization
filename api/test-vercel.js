@@ -8,9 +8,10 @@ module.exports = (req, res) => {
   // Return a simple response with timestamp to verify deployment
   res.status(200).json({
     success: true,
-    message: "Vercel deployment is working!",
-    version: "1.0.0",
+    message: "Vercel deployment is working! Updated version.",
+    version: "1.0.1",
     timestamp: new Date().toISOString(),
-    deployment_id: "c0d585152" // Last git commit hash
+    deployment_id: "6513b61fa", // Last git commit hash
+    update_time: "2025-03-17T03:30:00Z" // Fixed timestamp for verification
   });
 }; 
