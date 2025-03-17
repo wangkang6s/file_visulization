@@ -70,7 +70,7 @@
     },
     "api/process-stream.js": {
       "memory": 1024,
-      "maxDuration": 300
+      "maxDuration": 60
     },
     "api/test-vercel.js": {
       "memory": 128,
