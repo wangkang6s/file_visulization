@@ -4,15 +4,20 @@ This document provides instructions for running the File Visualizer application 
 
 ## Prerequisites
 
-- Python 3.7 or higher
+- Python 3.8 or higher
 - pip (Python package installer)
+- Anthropic API key (for Claude 3.7)
 
 ## Installation
 
-1. Clone the repository or download the source code
-2. Navigate to the project directory
-3. Install the required dependencies:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/hubeiqiao/File-Visualizer.git
+   cd File-Visualizer
    ```
+
+2. Install the required dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
 
@@ -58,12 +63,17 @@ http://localhost:5001
 ```
 (or the custom port you specified)
 
-## Important Notes
+## Using the Application
 
-- Ensure you have a stable internet connection as the application communicates with the Anthropic API
-- File generation may take some time depending on the size and complexity of your files
-- You need a valid Anthropic API key to use this application
-- API usage will be billed according to your Anthropic account settings
+1. Enter your Anthropic API key when prompted
+2. Upload a file (PDF, DOCX, TXT) or paste text directly
+3. Adjust parameters if needed:
+   - Temperature (creativity level)
+   - Max tokens (output length)
+   - Thinking budget (for Claude's thinking process)
+4. Add custom instructions (optional)
+5. Click "Generate Visualization"
+6. View the result, copy the HTML, or download the file
 
 ## Troubleshooting
 
