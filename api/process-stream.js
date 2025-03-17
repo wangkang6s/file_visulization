@@ -22,9 +22,19 @@ module.exports = (req, res) => {
   }
   
   try {
+    // Log the request body for debugging
+    console.log('Request body:', req.body);
+    
     // Get content from request body
-    const content = req.body && req.body.content;
-    const fileType = req.body && req.body.file_type || 'txt';
+    const body = req.body || {};
+    
+    // Check for both 'content' and 'source' parameters for compatibility
+    let content = body.content || '';
+    if (!content && body.source) {
+      content = body.source; // Fallback to 'source' if 'content' is empty
+    }
+    
+    const fileType = body.file_type || 'txt';
     
     // Check if content is provided
     if (!content) {

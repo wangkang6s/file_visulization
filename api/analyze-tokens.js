@@ -21,8 +21,9 @@ module.exports = (req, res) => {
   
   try {
     // Get content from request body
-    const content = req.body && req.body.content;
-    const fileType = req.body && req.body.file_type || 'txt';
+    const body = req.body || {};
+    const content = body.content || '';
+    const fileType = body.file_type || 'txt';
     
     // Check if content is provided
     if (!content) {
@@ -36,11 +37,19 @@ module.exports = (req, res) => {
     // This is a very rough approximation - Claude's actual tokenization is more complex
     const tokenCount = estimateTokenCount(content);
     
-    // Return the estimated token count
+    // Format the cost estimate with locale string to match frontend expectations
+    const costEstimate = (tokenCount / 1000000 * 3.0).toFixed(6);
+    
+    // Return the estimated token count in the format expected by the frontend
     return res.status(200).json({
       success: true,
       token_count: tokenCount,
-      cost_estimate: tokenCount / 1000000 * 3.0, // $3 per million tokens for Claude
+      token_count_str: tokenCount.toLocaleString(),
+      cost_estimate: costEstimate,
+      cost_estimate_str: '$' + parseFloat(costEstimate).toLocaleString(undefined, {
+        minimumFractionDigits: 6,
+        maximumFractionDigits: 6
+      }),
       message: 'Token count estimated (Vercel serverless)'
     });
     
