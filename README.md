@@ -19,11 +19,11 @@ A web application that uses Claude 3.7 with thinking capabilities to transform f
 - Flask
 - Anthropic API key (Claude 3.7 access required)
 
-## Setup
+## Local Setup
 
 1. Clone the repository:
    ```
-   git clone <repository-url>
+   git clone https://github.com/yourusername/claude-file-visualizer.git
    cd claude-file-visualizer
    ```
 
@@ -36,11 +36,26 @@ A web application that uses Claude 3.7 with thinking capabilities to transform f
    ```
    python server.py
    ```
+   
+   Alternatively, use the provided script:
+   ```
+   ./start_server.sh
+   ```
 
 4. Open your browser and navigate to:
    ```
    http://localhost:5001
    ```
+
+## Deployment to Vercel
+
+This application is configured for deployment on Vercel:
+
+1. Fork or clone this repository to your GitHub account
+2. Connect your GitHub repository to Vercel
+3. Configure the following environment variables in Vercel:
+   - `ANTHROPIC_API_KEY`: Your Anthropic API key (keep it secret!)
+4. Deploy! Vercel will automatically use the configuration in vercel.json
 
 ## Usage
 
