@@ -12,7 +12,7 @@
     },
     {
       "source": "/api/validate-key",
-      "destination": "/api/validate_key"
+      "destination": "/api/validate-key.js"
     },
     { 
       "source": "/api/(.*)",
@@ -48,7 +48,7 @@
       "memory": 1024,
       "maxDuration": 60
     },
-    "api/validate_key.py": {
+    "api/validate-key.js": {
       "memory": 256,
       "maxDuration": 10
     }
