@@ -94,14 +94,9 @@ let state = {
 
 // Function to update processing text
 function setProcessingText(text) {
+    // Only update the in-page processing text
     if (elements.processingText) {
         elements.processingText.textContent = text;
-    }
-    
-    // Also update the processing container text
-    const processingTextElement = document.getElementById('processingText');
-    if (processingTextElement) {
-        processingTextElement.textContent = text;
     }
 }
 
@@ -797,14 +792,16 @@ async function startGeneration() {
         elements.processingStatus.classList.remove('hidden');
     }
     
-    // Show full-screen processing container
-    const processingContainer = document.getElementById('processingContainer');
-    if (processingContainer) {
-        processingContainer.style.display = 'flex';
-    }
+    // Use the in-page processing status instead of the full screen overlay
+    // const processingContainer = document.getElementById('processingContainer');
+    // if (processingContainer) {
+    //     processingContainer.style.display = 'flex';
+    // }
     
     // Set initial processing text
-    setProcessingText("Preparing to generate...");
+    if (elements.processingText) {
+        elements.processingText.textContent = "Preparing to generate...";
+    }
     
     if (elements.processingIcon) {
         elements.processingIcon.classList.remove("fa-check-circle");
@@ -1474,10 +1471,11 @@ function stopProcessingAnimation() {
         elements.processingStatus.classList.add('processing-complete');
     }
     
-    // Hide the full-screen processing container
-    const processingContainer = document.getElementById('processingContainer');
-    if (processingContainer) {
-        processingContainer.style.display = 'none';
+    // Hide processing status after completion
+    if (elements.processingStatus) {
+        setTimeout(() => {
+            elements.processingStatus.classList.add('hidden');
+        }, 2000); // Hide after 2 seconds to allow user to see completion
     }
     
     // Update elapsed time if it exists

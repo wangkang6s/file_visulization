@@ -23,6 +23,7 @@ import random
 import socket
 import argparse
 import sys
+import traceback
 
 app = Flask(__name__, static_folder='static')
 CORS(app)  # Enable CORS for all routes
@@ -533,7 +534,7 @@ def process_stream():
         return jsonify({"success": False, "error": "Source code or text is required"}), 400
         
     format_prompt = data.get('format_prompt', '')
-    model = data.get('model', 'claude-3-5-sonnet-20240620')
+    model = data.get('model', 'claude-3-7-sonnet-20250219')  # Updated to Claude 3.7
     max_tokens = int(data.get('max_tokens', DEFAULT_MAX_TOKENS))
     temperature = float(data.get('temperature', 0.5))
     thinking_budget = int(data.get('thinking_budget', DEFAULT_THINKING_BUDGET))
@@ -563,7 +564,7 @@ def process_stream():
     """
     
     # Prepare user prompt
-    user_message = f"""
+    user_content = f"""
     {format_prompt}
     
     Here is the content to transform into a website:
@@ -571,20 +572,91 @@ def process_stream():
     {content}
     """
     
-    # Create streaming response
-    stream_generator = create_stream_generator(
-        client=client,
-        system_prompt=system_prompt,
-        user_message=user_message,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        thinking_budget=thinking_budget
-    )
+    # Define a streaming response generator with specific Claude 3.7 implementation
+    def stream_generator():
+        try:
+            yield format_stream_event("stream_start", {"message": "Stream starting"})
+            
+            # Use the Claude 3.7 specific implementation with beta parameter
+            with client.beta.messages.stream(
+                model="claude-3-7-sonnet-20250219",
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": user_content
+                            }
+                        ]
+                    }
+                ],
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget
+                },
+                betas=[OUTPUT_128K_BETA],  # Using betas parameter instead of headers
+            ) as stream:
+                message_id = str(uuid.uuid4())
+                generated_text = ""
+                
+                for chunk in stream:
+                    # Handle thinking updates
+                    if hasattr(chunk, "thinking") and chunk.thinking:
+                        thinking_data = {
+                            "type": "thinking_update",
+                            "chunk_id": message_id,
+                            "thinking": {
+                                "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                            }
+                        }
+                        yield format_stream_event("content", thinking_data)
+                    
+                    # Handle content block deltas (the actual generated text)
+                    if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
+                        content_data = {
+                            "type": "content_block_delta",
+                            "chunk_id": message_id,
+                            "delta": {
+                                "text": chunk.delta.text
+                            }
+                        }
+                        generated_text += chunk.delta.text
+                        yield format_stream_event("content", content_data)
+                
+                # Send message complete event with usage statistics when available
+                usage_data = None
+                if hasattr(stream, "usage"):
+                    usage_data = {
+                        "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
+                        "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
+                        "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                    }
+                
+                complete_data = {
+                    "type": "message_complete",
+                    "message_id": message_id,
+                    "chunk_id": message_id,
+                    "usage": usage_data,
+                    "html": generated_text
+                }
+                yield format_stream_event("content", complete_data)
+                yield format_stream_event("stream_end", {"message": "Stream complete"})
+            
+        except Exception as e:
+            error_data = {
+                "type": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+            yield format_stream_event("error", error_data)
     
-    # Return streaming response
+    # Return the streaming response
     return Response(
-        stream_with_context(stream_generator),
+        stream_with_context(stream_generator()),
         mimetype='text/event-stream'
     )
 
