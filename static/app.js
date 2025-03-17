@@ -958,6 +958,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                     const lines = chunk.split('\n');
                     
                     for (const line of lines) {
+                        // Skip empty lines
+                        if (!line.trim()) continue;
+                        
+                        // Handle SSE format (data: {...})
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
@@ -970,7 +974,14 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     continue;
                                 }
                                 
-                                // Handle content updates
+                                // Handle new local streaming format (type: delta)
+                                if (data.type === 'delta' && data.content) {
+                                    generatedContent += data.content;
+                                    updateHtmlPreview(generatedContent);
+                                    continue;
+                                }
+                                
+                                // Handle content block deltas (the actual generated text) - Vercel format
                                 if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
                                     generatedContent += data.delta.text;
                                     updateHtmlPreview(generatedContent);
@@ -981,7 +992,13 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     lastChunkId = data.chunk_id;
                                 }
                                 
-                                // Check for completion
+                                // Check for the local message_complete
+                                if (data.type === 'end') {
+                                    console.log('End message received from local server');
+                                    // This is handled at the end of the stream
+                                }
+                                
+                                // Handle message complete from Vercel
                                 if (data.type === 'message_complete') {
                                     console.log('Message complete received');
                                     
@@ -999,6 +1016,12 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         
                                         elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
                                     }
+                                }
+                                
+                                // Handle html field if present
+                                if (data.html) {
+                                    generatedContent = data.html;
+                                    updateHtmlPreview(generatedContent);
                                 }
                             } catch (e) {
                                 console.warn('Error parsing data line:', e, line);
