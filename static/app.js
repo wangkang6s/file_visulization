@@ -1025,17 +1025,28 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     
                                     // Update usage stats if available
                                     if (data.usage) {
-                                        elements.inputTokens.textContent = data.usage.input_tokens || '-';
-                                        elements.outputTokens.textContent = data.usage.output_tokens || '-';
-                                        elements.thinkingTokens.textContent = data.usage.thinking_tokens || '-';
+                                        // Store these values in variables to ensure proper calculation
+                                        const inputTokens = parseInt(data.usage.input_tokens || 0);
+                                        const outputTokens = parseInt(data.usage.output_tokens || 0);
+                                        const thinkingTokens = parseInt(data.usage.thinking_tokens || 0);
                                         
-                                        // Calculate cost
-                                        const inputCost = (data.usage.input_tokens || 0) / 1000000 * 3;
-                                        const outputCost = (data.usage.output_tokens || 0) / 1000000 * 15;
-                                        const thinkingCost = (data.usage.thinking_tokens || 0) / 1000000 * 3;
+                                        // Update the display elements
+                                        elements.inputTokens.textContent = inputTokens.toLocaleString() || '-';
+                                        elements.outputTokens.textContent = outputTokens.toLocaleString() || '-';
+                                        elements.thinkingTokens.textContent = thinkingTokens.toLocaleString() || '-';
+                                        
+                                        // Calculate cost using accurate rates
+                                        // $3 per million tokens for input and thinking tokens
+                                        // $15 per million tokens for output tokens
+                                        const inputCost = inputTokens / 1000000 * 3;
+                                        const outputCost = outputTokens / 1000000 * 15;
+                                        const thinkingCost = thinkingTokens / 1000000 * 3;
                                         const totalCost = inputCost + outputCost + thinkingCost;
                                         
-                                        elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                                        console.log(`Cost calculation: Input($${inputCost.toFixed(6)}) + Output($${outputCost.toFixed(6)}) + Thinking($${thinkingCost.toFixed(6)}) = $${totalCost.toFixed(6)}`);
+                                        
+                                        // Update the total cost display
+                                        elements.totalCost.textContent = `$${totalCost.toFixed(6)}`;
                                     }
                                 }
                                 
@@ -1515,12 +1526,20 @@ function stopProcessingAnimation() {
         elements.processingStatus.classList.add('processing-complete');
     }
     
-    // Hide processing status after completion
+    // Update the processing text to show completion instead of hiding it
+    if (elements.processingText) {
+        elements.processingText.textContent = 'Generation complete! ✓';
+    }
+    
+    // Keep the processing status visible instead of hiding it
+    // Comment out the code that hides it
+    /*
     if (elements.processingStatus) {
         setTimeout(() => {
             elements.processingStatus.classList.add('hidden');
         }, 2000); // Hide after 2 seconds to allow user to see completion
     }
+    */
     
     // Update elapsed time if it exists
     if (elements.elapsedTime) {
