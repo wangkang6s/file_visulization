@@ -1,94 +1,69 @@
 # Claude 3.7 File Visualizer
 
-A web application that uses Claude 3.7 with thinking capabilities to transform files and text into visually appealing, structured web pages.
+A web application that uses Claude 3.7 to generate beautiful HTML visualizations from text files, PDFs, and Word documents.
 
 ## Features
 
-- **File Upload**: Upload text-based files (txt, md, json, csv, html, js, css, py, etc.)
-- **Text Input**: Directly enter or paste text for visualization
-- **Claude 3.7 Integration**: Leverages Claude 3.7 Sonnet with thinking capabilities
-- **Real-time Generation**: See HTML generation as it happens
-- **Preview**: View the generated HTML directly in the browser
-- **Download**: Save the generated HTML file
-- **Cost Tracking**: Monitor token usage and associated costs
-- **Custom Parameters**: Adjust Claude's temperature, max tokens, and thinking budget
+- Upload files (PDF, DOCX, TXT) or paste text directly
+- Real-time HTML generation with Claude 3.7
+- Live preview of the generated HTML
+- Copy HTML code or download as a file
+- Track token usage and cost
 
 ## Requirements
 
 - Python 3.8+
 - Flask
-- Anthropic API key (Claude 3.7 access required)
+- Anthropic API key
 
 ## Local Setup
 
 1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/claude-file-visualizer.git
-   cd claude-file-visualizer
+   ```bash
+   git clone https://github.com/hubeiqiao/File-Visualizer.git
+   cd File-Visualizer
    ```
 
 2. Install dependencies:
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 
 3. Run the application:
-   ```
-   python server.py
-   ```
-   
-   Alternatively, use the provided script:
-   ```
+   ```bash
    ./start_server.sh
    ```
-
-4. Open your browser and navigate to:
+   
+   Or manually:
+   ```bash
+   python server.py --port=5001
    ```
-   http://localhost:5001
-   ```
 
-## Deployment to Vercel
-
-This application is configured for deployment on Vercel:
-
-1. Fork or clone this repository to your GitHub account
-2. Connect your GitHub repository to Vercel
-3. Configure the following environment variables in Vercel:
-   - `ANTHROPIC_API_KEY`: Your Anthropic API key (keep it secret!)
-4. Deploy! Vercel will automatically use the configuration in vercel.json
+4. Open your browser and navigate to `http://localhost:5001`
 
 ## Usage
 
-1. Enter your Anthropic API key and validate it
-2. Upload a file or enter text for visualization
-3. (Optional) Add additional instructions to guide Claude
-4. Adjust Claude's parameters if needed
+1. Enter your Anthropic API key
+2. Upload a file or paste text
+3. Adjust parameters if needed:
+   - Temperature (creativity level)
+   - Max tokens (output length)
+   - Thinking budget (for Claude's thinking process)
+4. Add custom instructions (optional)
 5. Click "Generate Visualization"
-6. Monitor the generation process
-7. Preview the result, check token usage, and download the HTML
+6. View the result, copy the HTML, or download the file
 
 ## Technical Details
 
-- **Frontend**: HTML, CSS (TailwindCSS), JavaScript
-- **Backend**: Python with Flask
-- **API**: Anthropic Claude API with batch processing and streaming
-- **Features**: Dark/light mode, responsive design, token and cost tracking
-
-## Claude Settings
-
-- **Model**: claude-3-7-sonnet-20250219
-- **Temperature**: Adjustable (0-1, default 1.0)
-- **Max Tokens**: Adjustable (1,000-128,000, default 64,000)
-- **Thinking Budget**: Adjustable (1,024-128,000, default 32,000)
-- **Output Limit**: 128K tokens using beta feature
-
-## License
-
-MIT License
+- **Frontend**: HTML, TailwindCSS, JavaScript
+- **Backend**: Python, Flask
+- **Claude Settings**: Uses Claude 3.7 with thinking capabilities
+- **Libraries**: PyPDF2 for PDF processing, python-docx for Word documents
 
 ## Acknowledgments
 
 - [Anthropic](https://www.anthropic.com/) for Claude 3.7
 - [TailwindCSS](https://tailwindcss.com/) for styling
-- [Font Awesome](https://fontawesome.com/) for icons
-- [Prism.js](https://prismjs.com/) for code highlighting 
+- [Flask](https://flask.palletsprojects.com/) for the web framework
+- [PyPDF2](https://pypi.org/project/PyPDF2/) for PDF processing
+- [python-docx](https://python-docx.readthedocs.io/) for Word document processing 
