@@ -39,15 +39,16 @@ module.exports = (req, res) => {
       });
     }
     
-    // Generate system prompt based on file type (same as in process-stream.js)
-    const systemPrompt = generateSystemPrompt(fileType);
+    // Use the same system prompt as server.py
+    const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
     
-    // Estimate token count for both the content and system prompt
-    const contentTokens = estimateTokenCount(content);
-    const systemPromptTokens = estimateTokenCount(systemPrompt);
+    // Use the same token estimation logic as in server.py
+    // Tokens are calculated by character count divided by a factor
+    const systemPromptTokens = Math.floor(systemPrompt.length / 3);
+    const contentTokens = Math.floor(content.length / 4);
     
-    // Total tokens including system prompt and message formatting overhead
-    const totalTokens = contentTokens + systemPromptTokens + 20; // 20 tokens for message formatting overhead
+    // Total tokens (including message formatting overhead)
+    const totalTokens = systemPromptTokens + contentTokens;
     
     // Calculate cost estimate (using the same 3.0 per million tokens pricing)
     const costEstimate = (totalTokens / 1000000 * 3.0).toFixed(6);
@@ -77,85 +78,6 @@ module.exports = (req, res) => {
     });
   }
 };
-
-// Generate system prompt based on file type
-function generateSystemPrompt(fileType) {
-  let fileTypePrompt = "";
-  
-  // Customize prompt based on file type
-  switch(fileType.toLowerCase()) {
-    case 'code':
-    case 'js':
-    case 'javascript':
-    case 'py':
-    case 'python':
-    case 'java':
-    case 'c':
-    case 'cpp':
-    case 'cs':
-    case 'go':
-    case 'rust':
-    case 'php':
-    case 'ruby':
-    case 'swift':
-    case 'kotlin':
-    case 'typescript':
-    case 'ts':
-      fileTypePrompt = "The input is source code. Please provide a detailed explanation of what this code does, including function explanations, API usage, algorithm analysis, and potential bugs or improvements.";
-      break;
-    case 'json':
-    case 'xml':
-    case 'yaml':
-    case 'yml':
-    case 'toml':
-      fileTypePrompt = "The input is structured data. Please provide a visualization and explanation of this data structure, highlighting key elements and relationships.";
-      break;
-    case 'html':
-    case 'css':
-    case 'scss':
-      fileTypePrompt = "The input is web markup/styling. Please analyze the structure, styles, and potential rendering, suggesting improvements or issues.";
-      break;
-    case 'markdown':
-    case 'md':
-      fileTypePrompt = "The input is markdown text. Please convert it to a beautifully formatted HTML representation with proper styling.";
-      break;
-    case 'txt':
-    case 'text':
-    default:
-      fileTypePrompt = "The input is plain text. Please analyze and structure this content into a well-formatted HTML document.";
-  }
-  
-  // Generate the complete system prompt
-  return `You are an expert file visualization agent that creates HTML representations of various file types. Your goal is to generate a well-structured, informative HTML document that helps users understand the content of their files.
-
-${fileTypePrompt}
-
-Your output must follow these rules:
-1. Return ONLY valid HTML that can be directly injected into a web page. Do not include any markdown, explanations outside the HTML, or code blocks.
-2. Include a complete HTML document with <html>, <head>, and <body> tags.
-3. Include appropriate styling using internal CSS to make your visualization visually appealing and easy to understand.
-4. Use semantic HTML elements where appropriate.
-5. Include syntax highlighting for code samples.
-6. Add visual elements like tables, lists, or sections to organize information.
-7. Ensure your HTML is valid and properly escaped.
-8. Provide a thorough analysis of the file content.
-
-Return the complete HTML document as your response.`;
-}
-
-// Token count estimator - matches the algorithm in server.py
-function estimateTokenCount(text) {
-  if (!text) return 0;
-  
-  // Simple word-based estimation, matching the local version
-  const wordCount = text.trim().split(/\s+/).length;
-  const avgTokensPerWord = 1.3;
-  
-  // Calculate token count based on words
-  const tokenEstimate = Math.round(wordCount * avgTokensPerWord);
-  
-  return tokenEstimate;
-}
 
 // Helper function to format numbers with commas
 function formatNumberWithCommas(number) {
