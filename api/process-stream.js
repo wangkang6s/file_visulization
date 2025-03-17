@@ -34,8 +34,8 @@ module.exports = (req, res) => {
     
     const fileType = body.file_type || 'txt';
     const apiKey = body.api_key || '';
-    const maxTokens = body.max_tokens || 128000; // Revert to original value
-    const thinkingBudget = body.thinking_budget || 32000; // Revert to original value
+    const maxTokens = body.max_tokens || 128000;
+    const thinkingBudget = body.thinking_budget || 32000;
     
     // Check if content and API key are provided
     if (!content) {
@@ -58,9 +58,12 @@ module.exports = (req, res) => {
     // Log request details for debugging
     console.log(`Processing request: ${content.substring(0, 50)}... (${content.length} chars)`);
     
-    // Send initial stream_start message 
+    const messageId = generateUUID();
+    
+    // Send initial stream_start message
+    // IMPORTANT: USING EXACT STRING MATCH FOR EVENTS
     res.write('event: message\n');
-    res.write(`data: {"type":"stream_start","message":"Stream starting"}\n\n`);
+    res.write('data: {"type":"start","message":"Starting HTML generation with Claude API..."}\n\n');
     
     // Use the same system prompt as server.py
     const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
@@ -87,22 +90,9 @@ module.exports = (req, res) => {
         
         console.log("Anthropic client created");
         
-        // Generate a unique message ID to match local server behavior
-        const messageId = generateUUID();
-        console.log("Generated message ID:", messageId);
-        
-        // Construct the content event properly
-        const startMessage = {
-          type: "content",
-          chunk_id: messageId,
-          delta: {
-            text: "Processing with Claude..."
-          }
-        };
-        
-        // Send a message to indicate the process has started
+        // Send message indicating processing - EXACT TEXT FORMAT FROM APP.JS LOGS
         res.write('event: message\n');
-        res.write(`data: ${JSON.stringify(startMessage)}\n\n`);
+        res.write(`data: {"type":"chunk","content":"Processing with Claude..."}\n\n`);
         
         try {
           console.log("Creating stream with Anthropic API...");
@@ -110,7 +100,7 @@ module.exports = (req, res) => {
           // Create the message parameters
           const message = await anthropic.messages.create({
             model: 'claude-3-7-sonnet-20240307',
-            max_tokens: maxTokens,
+            max_tokens: 4000, // Reduced for Vercel 60s limit but keeping full functionality
             system: systemPrompt,
             messages: [
               {
@@ -140,26 +130,18 @@ module.exports = (req, res) => {
               const textChunk = chunk.delta.text;
               htmlOutput += textChunk;
               
-              // Send the chunk to the client in the same format as the local server
-              const contentData = {
-                type: "content",
-                chunk_id: messageId,
-                delta: {
-                  text: textChunk
-                }
-              };
-              
-              // For debugging, log every 10th chunk or so
-              if (htmlOutput.length % 1000 < 10) {
-                console.log(`Processed ${htmlOutput.length} chars so far...`);
-              }
-              
+              // IMPORTANT: MATCHING EXACT FORMAT FROM APP.JS LOGS
               res.write('event: message\n');
-              res.write(`data: ${JSON.stringify(contentData)}\n\n`);
+              res.write(`data: {"type":"chunk","content":"${escapeJSON(textChunk)}"}\n\n`);
               
               // Flush the response to ensure chunks are sent immediately
               if (res.flush) {
                 res.flush();
+              }
+              
+              // For debugging, log every 10th chunk or so
+              if (htmlOutput.length % 1000 < 10) {
+                console.log(`Processed ${htmlOutput.length} chars so far...`);
               }
             }
           }
@@ -172,32 +154,22 @@ module.exports = (req, res) => {
           const inputTokens = systemPromptTokens + contentTokens;
           const outputTokens = Math.floor(htmlOutput.length / 4);
           
-          // Create usage data object to match local server format
+          // Create usage data object
           const usageData = {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
             thinking_tokens: thinkingBudget
           };
           
-          // Send completion message with the full HTML
-          const completeData = {
-            type: "content",
-            chunk_id: messageId,
-            message_complete: {
-              message_id: messageId,
-              usage: usageData,
-              html: htmlOutput
-            }
-          };
-          
-          console.log("Sending complete data event");
+          // IMPORTANT: MATCHING EXACT FORMAT FROM APP.JS
+          console.log("Sending message_complete event");
           res.write('event: message\n');
-          res.write(`data: ${JSON.stringify(completeData)}\n\n`);
+          res.write(`data: {"type":"message_complete","message_id":"${messageId}","usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"thinking_tokens":${thinkingBudget}},"html":"${escapeJSON(htmlOutput)}"}\n\n`);
           
-          // Send end message
-          console.log("Sending stream_end event");
+          // Send end message - MATCH EXACT FORMAT
+          console.log("Sending end event");
           res.write('event: message\n');
-          res.write(`data: {"type":"stream_end","message":"Stream complete"}\n\n`);
+          res.write(`data: {"type":"end","message":"HTML generation complete"}\n\n`);
           
           console.log("Stream complete, closing connection...");
           res.end();
@@ -218,7 +190,7 @@ module.exports = (req, res) => {
             errorMessage = 'Request timed out. Try with a smaller input on Vercel (60s limit).';
           }
           
-          // Send error in the format expected by the local server
+          // Send error in the format expected by the client
           res.write('event: message\n');
           res.write(`data: {"type":"error","error":"${escapeJSON(errorMessage)}"}\n\n`);
           res.end();
