@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/static/index.html"
+    },
+    {
+      "source": "/(.*).html",
+      "destination": "/static/index.html"
+    },
+    { 
+      "source": "/api/(.*)",
+      "destination": "/api" 
+    },
+    {
+      "source": "/static/(.*)",
+      "destination": "/static/$1"
+    },
+    {
+      "source": "/(.*).css",
+      "destination": "/static/$1.css"
+    },
+    {
+      "source": "/(.*).js",
+      "destination": "/static/$1.js"
+    },
+    {
+      "source": "/(.*).ico",
+      "destination": "/static/$1.ico"
+    },
+    {
+      "source": "/(.*).png",
+      "destination": "/static/$1.png"
+    },
+    { 
+      "source": "/(.*)",
+      "destination": "/static/index.html"
+    }
+  ],
+  "functions": {
+    "api/index.py": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "build": {
+    "env": {
+      "PYTHON_VERSION": "3.11"
+    }
+  }
+} 
