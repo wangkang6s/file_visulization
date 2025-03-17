@@ -20,9 +20,18 @@ module.exports = (req, res) => {
   }
   
   try {
+    // Log the request body for debugging
+    console.log('Request body:', req.body);
+    
     // Get content from request body
     const body = req.body || {};
-    const content = body.content || '';
+    
+    // Check for both 'content' and 'source' parameters for compatibility
+    let content = body.content || '';
+    if (!content && body.source) {
+      content = body.source; // Fallback to 'source' if 'content' is empty
+    }
+    
     const fileType = body.file_type || 'txt';
     
     // Check if content is provided
@@ -40,16 +49,19 @@ module.exports = (req, res) => {
     // Format the cost estimate with locale string to match frontend expectations
     const costEstimate = (tokenCount / 1000000 * 3.0).toFixed(6);
     
+    // Format token count as string to avoid frontend errors
+    const tokenCountStr = tokenCount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    
+    // Format cost estimate as string with proper formatting
+    const costEstimateStr = '$' + costEstimate.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    
     // Return the estimated token count in the format expected by the frontend
     return res.status(200).json({
       success: true,
       token_count: tokenCount,
-      token_count_str: tokenCount.toLocaleString(),
+      token_count_str: tokenCountStr,
       cost_estimate: costEstimate,
-      cost_estimate_str: '$' + parseFloat(costEstimate).toLocaleString(undefined, {
-        minimumFractionDigits: 6,
-        maximumFractionDigits: 6
-      }),
+      cost_estimate_str: costEstimateStr,
       message: 'Token count estimated (Vercel serverless)'
     });
     

@@ -658,24 +658,30 @@ def test_api():
             "timestamp": time.time()
         })
 
-if __name__ == '__main__':
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Start the Claude 3.7 File Visualizer server')
-    parser.add_argument('--port', type=int, help='Port to run the server on')
-    parser.add_argument('--no-debug', action='store_true', help='Disable debug mode')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Run the Claude 3.7 File Visualizer server')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5009)),
+                        help='Port to run the server on')
+    parser.add_argument('--host', type=str, default='0.0.0.0',
+                        help='Host to run the server on')
+    parser.add_argument('--debug', action='store_true',
+                        help='Run in debug mode')
+    parser.add_argument('--no-reload', action='store_true',
+                        help='Disable auto-reloading on code changes')
+    
     args = parser.parse_args()
     
-    # Determine the port to use (priority: command-line arg > environment var > default)
-    port = args.port or int(os.environ.get('PORT', 5001))
+    port = args.port
+    host = args.host
+    debug_mode = args.debug
+    use_reloader = not args.no_reload
     
-    print("Claude 3.7 File Visualizer starting...")
+    # Check if port is already in use
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('localhost', port))
+    sock.close()
     
-    # Check if the port is available
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(('localhost', port))
-        s.close()
-    except socket.error:
+    if result == 0:
         print(f"Port {port} is in use. Try using:")
         print(f"  python server.py --port={port+1}")
         print(f"  # or")
@@ -684,10 +690,10 @@ if __name__ == '__main__':
         print(f"  lsof -i :{port} | awk 'NR>1 {{print $2}}' | xargs kill -9 # to kill process using port {port}")
         sys.exit(1)
     
-    # Start the server - debug mode is enabled by default unless --no-debug is specified
-    debug_mode = not args.no_debug
-    print(f"Server running at http://localhost:{port} with debug mode {'disabled' if args.no_debug else 'enabled'}")
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    print("Claude 3.7 File Visualizer starting...")
+    print(f"Server running at http://localhost:{port}" + (" with debug mode enabled" if debug_mode else ""))
+    
+    app.run(host=host, port=port, debug=debug_mode, use_reloader=use_reloader)
 
 # Important: Export the Flask app for Vercel
 app
