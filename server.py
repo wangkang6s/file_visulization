@@ -408,98 +408,176 @@ def analyze_tokens():
     except Exception as e:
         return jsonify({"error": f"Error analyzing tokens: {str(e)}"}), 500
 
-@app.route('/api/process-stream', methods=['POST'])
-def process_stream():
-    print("\n==== API PROCESS STREAM REQUEST RECEIVED ====")
-    print(f"Request headers: {dict(request.headers)}")
-    print(f"Request method: {request.method}")
-    
-    data = request.get_json()
-    if not data:
-        print("ERROR: No data provided in process-stream request")
-        return jsonify({"error": "No data provided"}), 400
-    
-    # Get required data from request
-    api_key = data.get('api_key')
-    source = data.get('source', '')
-    format_prompt = data.get('format_prompt', '')
-    model = data.get('model', 'claude-3-7-sonnet-20250219')
-    max_tokens = int(data.get('max_tokens', 128000))
-    temperature = float(data.get('temperature', 1.0))
-    thinking_budget = int(data.get('thinking_budget', 32000))
-    session_id = data.get('session_id')  # For reconnections
-    
-    # Check if API key is provided
-    if not api_key:
-        print("ERROR: API key is missing in process-stream request")
-        return jsonify({"error": "API key is required"}), 400
-    
-    # Check if source is provided
-    if not source:
-        print("ERROR: Source content is missing in process-stream request")
-        return jsonify({"error": "Source code or text is required"}), 400
-    
-    print(f"Process stream request: model={model}, max_tokens={max_tokens}, source_length={len(source)}")
-    
+# Define helper functions for streaming
+def format_stream_event(event_type, data=None):
+    """Format a Server-Sent Event (SSE) message"""
+    buffer = f"event: {event_type}\n"
+    if data:
+        buffer += f"data: {json.dumps(data)}\n"
+    buffer += "\n"
+    return buffer
+
+def create_stream_generator(client, system_prompt, user_message, model, max_tokens, temperature, thinking_budget=None):
+    """Create a generator that yields SSE events for streaming Claude responses"""
     try:
-        # Create the Anthropic client
-        print("Creating Anthropic client...")
-        client = create_anthropic_client(api_key)
-        
-        # Prepare the message content
-        content = source
-        if format_prompt:
-            content += "\n\n" + format_prompt
-        
-        # Create the streaming response
-        print("Starting streaming response...")
-        
-        # Create parameters for the API call
-        params = {
+        # Create message parameters
+        message_params = {
             "model": model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "system": "You are a helpful assistant that transforms code and text into beautiful HTML visualizations. Output ONLY the HTML code without any additional explanations, comments, or markdown formatting. The response should be valid HTML that can be directly rendered in a browser.",
-            "messages": [{"role": "user", "content": content}],
+            "system": system_prompt,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
+            "stream": True,
+            "anthropic_metadata": {
+                "user_session_id": f"file-visualizer-{int(time.time())}",
+            }
         }
         
-        # Add thinking parameter if thinking_budget > 0
-        if thinking_budget > 0:
-            params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-            
-        # Add beta parameter if needed
-        if max_tokens > 4096:
-            params["betas"] = [OUTPUT_128K_BETA]
-            
-        # Start the stream
-        stream = client.beta.messages.stream(**params)
+        # Add thinking parameter if specified
+        if thinking_budget and thinking_budget > 0:
+            try:
+                # For newer versions of the Anthropic library
+                from anthropic.types import Thinking
+                message_params["thinking"] = Thinking(
+                    enabled=True,
+                    budget_limit=thinking_budget
+                )
+            except ImportError:
+                # For older versions or fallback
+                message_params["thinking"] = {
+                    "enabled": True,
+                    "budget_limit": thinking_budget
+                }
         
-        # Return the streaming response
-        return Response(
-            stream_with_context(stream_response(stream)),
-            content_type='text/event-stream'
-        )
+        # Start the streaming response
+        yield format_stream_event("stream_start", {"message": "Stream starting"})
         
+        # Create streaming API call
+        with client.messages.stream(**message_params) as stream:
+            for chunk in stream:
+                # Handle thinking updates
+                if chunk.type == "thinking":
+                    thinking_data = {
+                        "type": "thinking_update",
+                        "chunk_id": stream.message.id,
+                        "thinking": {
+                            "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                        }
+                    }
+                    yield format_stream_event("content", thinking_data)
+                
+                # Handle content block deltas (the actual generated text)
+                elif chunk.type == "content_block_delta":
+                    content_data = {
+                        "type": "content_block_delta",
+                        "chunk_id": stream.message.id,
+                        "delta": {
+                            "text": chunk.delta.text
+                        }
+                    }
+                    yield format_stream_event("content", content_data)
+                
+                # Handle message complete
+                elif chunk.type == "message_complete":
+                    usage_data = None
+                    if hasattr(stream.message, "usage"):
+                        usage_data = {
+                            "input_tokens": stream.message.usage.input_tokens,
+                            "output_tokens": stream.message.usage.output_tokens
+                        }
+                        
+                        # Add thinking tokens if available
+                        if hasattr(stream.message.usage, "thinking_tokens"):
+                            usage_data["thinking_tokens"] = stream.message.usage.thinking_tokens
+                    
+                    complete_data = {
+                        "type": "message_complete",
+                        "message_id": stream.message.id,
+                        "chunk_id": stream.message.id,
+                        "usage": usage_data
+                    }
+                    yield format_stream_event("content", complete_data)
+            
+            # End of stream event
+            yield format_stream_event("stream_end", {"message": "Stream complete"})
+                
     except Exception as e:
-        error_message = str(e)
-        print(f"ERROR in process-stream: {error_message}")
-        return jsonify({"error": f"Failed to process stream: {error_message}"}), 500
+        error_data = {
+            "type": "error",
+            "error": str(e)
+        }
+        yield format_stream_event("error", error_data)
 
-def stream_response(stream):
-    """Helper function to format the streaming response"""
+# Add API endpoint for streaming processing
+@app.route('/api/process-stream', methods=['POST'])
+def process_stream():
+    """
+    Process a streaming request with reconnection support.
+    """
+    # Extract request data
+    data = request.get_json()
+    api_key = data.get('api_key')
+    content = data.get('content', '')
+    format_prompt = data.get('format_prompt', '')
+    model = data.get('model', 'claude-3-5-sonnet-20240620')
+    max_tokens = int(data.get('max_tokens', DEFAULT_MAX_TOKENS))
+    temperature = float(data.get('temperature', 0.5))
+    thinking_budget = int(data.get('thinking_budget', DEFAULT_THINKING_BUDGET))
+    
+    # Reconnection support
+    session_id = data.get('session_id', None)
+    is_reconnect = data.get('is_reconnect', False)
+    last_chunk_id = data.get('last_chunk_id', None)
+    
+    # Create Anthropic client
+    client = None
     try:
-        with stream as response:
-            for chunk in response:
-                if chunk.type == 'content_block_start':
-                    yield 'data: {"type": "start"}\n\n'
-                elif chunk.type == 'content_block_delta':
-                    yield f'data: {{"type": "delta", "content": {json.dumps(chunk.delta.text)}}}\n\n'
-                elif chunk.type == 'content_block_stop':
-                    yield 'data: {"type": "end"}\n\n'
-                elif chunk.type == 'message_stop':
-                    break
+        client = create_anthropic_client(api_key)
     except Exception as e:
-        yield f'data: {{"type": "error", "error": {json.dumps(str(e))}}}\n\n'
+        return jsonify({
+            "success": False,
+            "error": f"API key validation failed: {str(e)}"
+        })
+    
+    # Prepare system prompt
+    system_prompt = """
+    You are a professional web developer helping to create a beautiful and functional static HTML website.
+    The user will provide either text content or file contents, and you will generate a complete, self-contained HTML website.
+    The website should be styled attractively with modern CSS and should not rely on external libraries unless specifically requested.
+    Ensure that the HTML, CSS, and any JavaScript is complete, valid, and ready to use without external dependencies.
+    The generated website should follow responsive design principles and work well on both desktop and mobile devices.
+    """
+    
+    # Prepare user prompt
+    user_message = f"""
+    {format_prompt}
+    
+    Here is the content to transform into a website:
+    
+    {content}
+    """
+    
+    # Create streaming response
+    stream_generator = create_stream_generator(
+        client=client,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        thinking_budget=thinking_budget
+    )
+    
+    # Return streaming response
+    return Response(
+        stream_with_context(stream_generator),
+        mimetype='text/event-stream'
+    )
 
 # Add a simple test endpoint
 @app.route('/api/test', methods=['GET', 'POST'])

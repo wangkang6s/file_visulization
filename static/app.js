@@ -833,72 +833,220 @@ async function startGeneration() {
 }
 
 async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, model, maxTokens, temperature, thinkingBudget) {
-    console.log("Starting HTML generation with streaming...");
+    console.log("Starting HTML generation with streaming and reconnection support...");
+    
+    // Prepare state variables for streaming
+    let generatedContent = '';
+    let sessionId = '';
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
     
     try {
-        // Change to use the non-streaming endpoint first, which seems to be working
-        const response = await fetch(`${API_URL}/api/process`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
+        // Show streaming status
+        setProcessingText('Connecting to Claude...');
+        
+        // Create a function to handle the streaming call
+        const processStreamChunk = async (isReconnect = false, lastChunkId = null) => {
+            console.log(`${isReconnect ? 'Reconnecting' : 'Starting'} stream${sessionId ? ' with session ID: ' + sessionId : ''}...`);
+            
+            // Display reconnection status if applicable
+            if (isReconnect) {
+                setProcessingText(`Reconnecting to continue generation... (attempt ${reconnectAttempts})`);
+            }
+            
+            // Create the request body
+            const requestBody = {
                 api_key: apiKey,
-                content: source,  // Changed from 'source' to 'content' to match server expectations
+                content: source,
                 format_prompt: formatPrompt,
                 model: model,
                 max_tokens: maxTokens,
                 temperature: temperature,
                 thinking_budget: thinkingBudget
-            })
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
-        }
-
-        // For non-streaming approach, handle the direct JSON response
-        const result = await response.json();
-        
-        if (result.error) {
-            throw new Error(result.error);
-        }
-        
-        // Handle successful response
-        state.generatedHtml = result.html;
-        updateHtmlDisplay();
-        updatePreview();
-        
-        // Update usage stats
-        if (result.usage) {
-            elements.inputTokens.textContent = result.usage.input_tokens || '-';
-            elements.outputTokens.textContent = result.usage.output_tokens || '-';
-            elements.thinkingTokens.textContent = result.usage.thinking_tokens || '-';
+            };
             
-            // Calculate cost
-            const inputCost = (result.usage.input_tokens || 0) / 1000000 * 3;
-            const outputCost = (result.usage.output_tokens || 0) / 1000000 * 15;
-            const thinkingCost = (result.usage.thinking_tokens || 0) / 1000000 * 3;
-            const totalCost = inputCost + outputCost + thinkingCost;
+            // Add session information for reconnections
+            if (sessionId) {
+                requestBody.session_id = sessionId;
+                requestBody.is_reconnect = true;
+                
+                if (lastChunkId) {
+                    requestBody.last_chunk_id = lastChunkId;
+                }
+            }
             
-            elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
-        }
+            try {
+                // Start the streaming request
+                const response = await fetch(`${API_URL}/api/process-stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    
+                    // Special handling for timeout errors that might contain session information
+                    if (response.status === 504 && errorText.includes('FUNCTION_INVOCATION_TIMEOUT')) {
+                        console.log('Vercel timeout detected, will attempt reconnection');
+                        
+                        // Extract session ID if present in the error message
+                        const sessionMatch = errorText.match(/cle\d+::[a-z0-9]+-\d+-[a-z0-9]+/);
+                        if (sessionMatch && !sessionId) {
+                            sessionId = sessionMatch[0];
+                            console.log('Extracted session ID:', sessionId);
+                        }
+                        
+                        // Increment reconnect attempts and try again
+                        reconnectAttempts++;
+                        if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a second before reconnecting
+                            return await processStreamChunk(true);
+                        } else {
+                            throw new Error('Maximum reconnection attempts reached. Please try again later.');
+                        }
+                    }
+                    
+                    throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+                }
+                
+                // Reset reconnect attempts on successful connection
+                reconnectAttempts = 0;
+                
+                // Get a reader for the stream
+                const reader = response.body.getReader();
+                let decoder = new TextDecoder();
+                let lastChunkId = null;
+                
+                // Process the stream
+                while (true) {
+                    const { value, done } = await reader.read();
+                    
+                    if (done) {
+                        console.log('Stream complete');
+                        break;
+                    }
+                    
+                    // Decode the chunk
+                    const chunk = decoder.decode(value, { stream: true });
+                    console.log('Received chunk:', chunk.substring(0, 50) + '...');
+                    
+                    // Process the chunk - look for data: lines
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                
+                                // Handle thinking updates
+                                if (data.type === 'thinking_update') {
+                                    if (data.thinking && data.thinking.content) {
+                                        setProcessingText(`Claude is thinking: ${data.thinking.content.substring(0, 100)}...`);
+                                    }
+                                    continue;
+                                }
+                                
+                                // Handle content updates
+                                if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
+                                    generatedContent += data.delta.text;
+                                    updateHtmlPreview(generatedContent);
+                                }
+                                
+                                // Save chunk ID for potential reconnection
+                                if (data.chunk_id) {
+                                    lastChunkId = data.chunk_id;
+                                }
+                                
+                                // Check for completion
+                                if (data.type === 'message_complete') {
+                                    console.log('Message complete received');
+                                    
+                                    // Update usage stats if available
+                                    if (data.usage) {
+                                        elements.inputTokens.textContent = data.usage.input_tokens || '-';
+                                        elements.outputTokens.textContent = data.usage.output_tokens || '-';
+                                        elements.thinkingTokens.textContent = data.usage.thinking_tokens || '-';
+                                        
+                                        // Calculate cost
+                                        const inputCost = (data.usage.input_tokens || 0) / 1000000 * 3;
+                                        const outputCost = (data.usage.output_tokens || 0) / 1000000 * 15;
+                                        const thinkingCost = (data.usage.thinking_tokens || 0) / 1000000 * 3;
+                                        const totalCost = inputCost + outputCost + thinkingCost;
+                                        
+                                        elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Error parsing data line:', e, line);
+                            }
+                        }
+                    }
+                }
+                
+                // If we got here, the stream completed successfully
+                state.generatedHtml = generatedContent;
+                updateHtmlDisplay();
+                updatePreview();
+                
+                // Show the results section
+                showResultSection();
+                
+                // Complete the generation process
+                stopProcessingAnimation();
+                resetGenerationUI(true);
+                showToast('Website generation complete!', 'success');
+                
+            } catch (error) {
+                // Check if this is a timeout error that we can recover from
+                if (error.message.includes('FUNCTION_INVOCATION_TIMEOUT') && reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                    console.log('Reconnecting due to timeout...');
+                    reconnectAttempts++;
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a second before reconnecting
+                    return await processStreamChunk(true, lastChunkId);
+                }
+                
+                // Otherwise, propagate the error
+                throw error;
+            }
+        };
         
-        // Show the results section
-        showResultSection();
-        
-        // Complete the generation process
-        stopProcessingAnimation();
-        resetGenerationUI(true);
-        showToast('Website generation complete!', 'success');
+        // Start the streaming process
+        await processStreamChunk();
         
     } catch (error) {
         console.error('Error in generateHTMLStreamWithReconnection:', error);
         showToast(`Error: ${error.message}`, 'error');
         stopProcessingAnimation();
         resetGenerationUI(false);
-        throw error;
+        throw error; // Propagate the error
+    }
+}
+
+function updateHtmlPreview(html) {
+    // Update the HTML output area as content streams in
+    if (elements.htmlOutput) {
+        elements.htmlOutput.textContent = html;
+        
+        // Highlight syntax (if Prism is available)
+        if (typeof Prism !== 'undefined') {
+            elements.htmlOutput.innerHTML = Prism.highlight(html, Prism.languages.markup, 'html');
+        }
+    }
+    
+    // Also update the preview if available
+    if (elements.previewIframe) {
+        try {
+            const iframe = elements.previewIframe;
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            doc.open();
+            doc.write(html);
+            doc.close();
+        } catch (e) {
+            console.warn('Error updating preview:', e);
+        }
     }
 }
 
