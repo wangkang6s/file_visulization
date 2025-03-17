@@ -45,11 +45,11 @@ module.exports = (req, res) => {
       });
     }
     
-    if (!apiKey || !apiKey.startsWith('sk-ant')) {
-      return res.status(400).json({
-        success: false,
-        error: 'Valid Anthropic API key is required'
-      });
+    if (!apiKey || !apiKey.startsWith('sk-ant-')) {
+      res.write('event: message\n');
+      res.write(`data: {"type":"error","error":"Valid Anthropic API key is required (should start with sk-ant-)"}\n\n`);
+      res.end();
+      return;
     }
     
     // Start streaming response
@@ -57,7 +57,7 @@ module.exports = (req, res) => {
     res.write('event: message\n');
     res.write(`data: {"type":"start","message":"Starting HTML generation with Claude API..."}\n\n`);
     
-    // Import Anthropic (using dynamic import)
+    // Use dynamic import to avoid bundling issues
     import('anthropic').then(async (Anthropic) => {
       try {
         // Create an Anthropic client
@@ -72,62 +72,84 @@ module.exports = (req, res) => {
         res.write('event: message\n');
         res.write(`data: {"type":"processing","message":"Processing with Claude..."}\n\n`);
         
-        // Create the message parameters
-        const message = await anthropic.messages.create({
-          model: 'claude-3-7-sonnet-20240307',
-          max_tokens: maxTokens,
-          system: systemPrompt,
-          messages: [
-            {
-              role: 'user',
-              content: content
+        try {
+          // Create the message parameters
+          const message = await anthropic.messages.create({
+            model: 'claude-3-7-sonnet-20240307',
+            max_tokens: maxTokens,
+            system: systemPrompt,
+            messages: [
+              {
+                role: 'user',
+                content: content
+              }
+            ],
+            stream: true
+          });
+          
+          // Collect the streaming response
+          let htmlOutput = '';
+          let messageId = '';
+          
+          // Process the streaming response
+          for await (const chunk of message) {
+            if (chunk.type === 'message_start') {
+              messageId = chunk.message.id;
+            } else if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
+              const textChunk = chunk.delta.text;
+              htmlOutput += textChunk;
+              
+              // Send the chunk to the client
+              res.write('event: message\n');
+              res.write(`data: {"type":"chunk","content":"${escapeJSON(textChunk)}"}\n\n`);
             }
-          ],
-          stream: true
-        });
-        
-        // Collect the streaming response
-        let htmlOutput = '';
-        let messageId = '';
-        
-        // Process the streaming response
-        for await (const chunk of message) {
-          if (chunk.type === 'message_start') {
-            messageId = chunk.message.id;
-          } else if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
-            const textChunk = chunk.delta.text;
-            htmlOutput += textChunk;
-            
-            // Send the chunk to the client
-            res.write('event: message\n');
-            res.write(`data: {"type":"chunk","content":"${escapeJSON(textChunk)}"}\n\n`);
           }
+          
+          // Calculate token usage
+          const contentTokens = estimateTokenCount(content);
+          const systemPromptTokens = estimateTokenCount(systemPrompt);
+          const inputTokens = contentTokens + systemPromptTokens + 20; // Adding 20 tokens for message formatting
+          const outputTokens = estimateTokenCount(htmlOutput);
+          
+          // Send completion message with the full HTML
+          res.write('event: message\n');
+          res.write(`data: {"type":"message_complete","message_id":"${messageId}","usage":{"input_tokens":${inputTokens},"output_tokens":${outputTokens},"thinking_tokens":${thinkingBudget}},"html":"${escapeJSON(htmlOutput)}"}\n\n`);
+          
+          // Send end message
+          res.write('event: message\n');
+          res.write(`data: {"type":"end","message":"HTML generation complete"}\n\n`);
+          res.end();
+        } catch (apiError) {
+          console.error('API call error:', apiError);
+          
+          // Handle specific API errors
+          let errorMessage = 'Error calling Claude API';
+          if (apiError.status === 401) {
+            errorMessage = 'Invalid API key or authentication error';
+          } else if (apiError.status === 400) {
+            errorMessage = 'Bad request: ' + (apiError.message || 'Check input parameters');
+          } else if (apiError.status === 429) {
+            errorMessage = 'Rate limit exceeded. Please try again later.';
+          } else if (apiError.status >= 500) {
+            errorMessage = 'Claude API service error. Please try again later.';
+          }
+          
+          res.write('event: message\n');
+          res.write(`data: {"type":"error","error":"${escapeJSON(errorMessage)}"}\n\n`);
+          res.end();
         }
-        
-        // Calculate token usage
-        const tokenCount = estimateTokenCount(content);
-        const outputTokens = estimateTokenCount(htmlOutput);
-        
-        // Send completion message with the full HTML
-        res.write('event: message\n');
-        res.write(`data: {"type":"message_complete","message_id":"${messageId}","usage":{"input_tokens":${tokenCount},"output_tokens":${outputTokens},"thinking_tokens":${thinkingBudget}},"html":"${escapeJSON(htmlOutput)}"}\n\n`);
-        
-        // Send end message
-        res.write('event: message\n');
-        res.write(`data: {"type":"end","message":"HTML generation complete"}\n\n`);
-        res.end();
       } catch (error) {
-        console.error('Anthropic API error:', error);
+        console.error('Anthropic client error:', error);
         
         res.write('event: message\n');
-        res.write(`data: {"type":"error","error":"Anthropic API error: ${escapeJSON(error.message)}"}\n\n`);
+        res.write(`data: {"type":"error","error":"Anthropic client error: ${escapeJSON(error.message)}"}\n\n`);
         res.end();
       }
-    }).catch(error => {
-      console.error('Failed to import Anthropic:', error);
+    }).catch(importError => {
+      console.error('Failed to import Anthropic:', importError);
       
       res.write('event: message\n');
-      res.write(`data: {"type":"error","error":"Failed to import Anthropic: ${escapeJSON(error.message)}"}\n\n`);
+      res.write(`data: {"type":"error","error":"Failed to import Anthropic library: ${escapeJSON(importError.message)}"}\n\n`);
       res.end();
     });
   } catch (error) {
