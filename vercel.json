@@ -10,6 +10,10 @@
       "source": "/(.*).html",
       "destination": "/static/index.html"
     },
+    {
+      "source": "/api/validate-key",
+      "destination": "/api/validate_key"
+    },
     { 
       "source": "/api/(.*)",
       "destination": "/api" 
@@ -43,6 +47,10 @@
     "api/index.py": {
       "memory": 1024,
       "maxDuration": 60
+    },
+    "api/validate_key.py": {
+      "memory": 256,
+      "maxDuration": 10
     }
   },
   "build": {
