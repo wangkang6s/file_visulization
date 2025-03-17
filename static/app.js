@@ -92,17 +92,26 @@ let state = {
     elapsedTimeInterval: null
 };
 
+// Function to update processing text
+function setProcessingText(text) {
+    if (elements.processingText) {
+        elements.processingText.textContent = text;
+    }
+    
+    // Also update the processing container text
+    const processingTextElement = document.getElementById('processingText');
+    if (processingTextElement) {
+        processingTextElement.textContent = text;
+    }
+}
+
 // Initialize the app
 function init() {
     console.log("Initializing app...");
     
-    // Set theme based on system preference or saved preference
-    if (localStorage.getItem('theme') === 'dark' || 
-        (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        document.documentElement.classList.add('dark');
-    } else {
-        document.documentElement.classList.remove('dark');
-    }
+    // Always use light theme
+    document.documentElement.classList.remove('dark');
+    localStorage.setItem('theme', 'light');
     
     // Load saved API key if available
     const savedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
@@ -125,9 +134,17 @@ function init() {
 
 // Event listeners
 function setupEventListeners() {
-    // Theme toggle
+    // Theme toggle - enforce light theme
     if (elements.themeToggle) {
-        elements.themeToggle.addEventListener('click', toggleTheme);
+        elements.themeToggle.addEventListener('click', function() {
+            // Always use light theme
+            document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', 'light');
+            // Update theme toggle icon
+            if (elements.themeToggle.innerHTML.includes('fa-moon')) {
+                elements.themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
+            }
+        });
     }
     
     // API Key
@@ -779,9 +796,16 @@ async function startGeneration() {
     if (elements.processingStatus) {
         elements.processingStatus.classList.remove('hidden');
     }
-    if (elements.processingText) {
-        elements.processingText.textContent = "Processing...";
+    
+    // Show full-screen processing container
+    const processingContainer = document.getElementById('processingContainer');
+    if (processingContainer) {
+        processingContainer.style.display = 'flex';
     }
+    
+    // Set initial processing text
+    setProcessingText("Preparing to generate...");
+    
     if (elements.processingIcon) {
         elements.processingIcon.classList.remove("fa-check-circle");
         elements.processingIcon.classList.add("fa-spinner", "fa-spin");
@@ -1448,6 +1472,12 @@ function stopProcessingAnimation() {
     // Mark processing container as complete (for CSS targeting)
     if (elements.processingStatus) {
         elements.processingStatus.classList.add('processing-complete');
+    }
+    
+    // Hide the full-screen processing container
+    const processingContainer = document.getElementById('processingContainer');
+    if (processingContainer) {
+        processingContainer.style.display = 'none';
     }
     
     // Update elapsed time if it exists

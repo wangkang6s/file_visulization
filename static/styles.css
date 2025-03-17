@@ -260,7 +260,7 @@ button:hover:not(:disabled),
     background-color: #e5e7eb;
 }
 
-/* Dark mode support */
+/* Dark mode support - commented out to ensure light theme only 
 .dark body {
     background-color: #111827;
     color: #f9fafb;
@@ -312,6 +312,7 @@ button:hover:not(:disabled),
 .dark #preview-iframe {
     background-color: white;
 }
+*/
 
 /* Base styles */
 * {
