@@ -522,7 +522,16 @@ def process_stream():
     # Extract request data
     data = request.get_json()
     api_key = data.get('api_key')
+    
+    # Check for both 'content' and 'source' parameters for compatibility
     content = data.get('content', '')
+    if not content:
+        content = data.get('source', '')  # Fallback to 'source' if 'content' is empty
+    
+    # If both are empty, return an error
+    if not content:
+        return jsonify({"success": False, "error": "Source code or text is required"}), 400
+        
     format_prompt = data.get('format_prompt', '')
     model = data.get('model', 'claude-3-5-sonnet-20240620')
     max_tokens = int(data.get('max_tokens', DEFAULT_MAX_TOKENS))

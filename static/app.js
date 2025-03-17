@@ -881,7 +881,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
             // Create the request body
             const requestBody = {
                 api_key: apiKey,
-                content: source,
+                source: source,
                 format_prompt: formatPrompt,
                 model: model,
                 max_tokens: maxTokens,
