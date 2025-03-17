@@ -97,8 +97,7 @@ else:
             response.headers.add('Access-Control-Max-Age', '3600')
             return response
             
-        # Forward to the main validate_key function
-        from server import validate_key
+        # Use the locally defined validate_key function instead of importing from server
         return validate_key()
     
     # Add a catch-all error handler for debugging
