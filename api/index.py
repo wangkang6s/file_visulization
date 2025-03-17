@@ -130,26 +130,47 @@ else:
         try:
             import sys
             import platform
-            import anthropic
+            
+            # Check if Anthropic is installed
+            anthropic_info = {}
+            try:
+                import anthropic
+                anthropic_info = {
+                    'version': getattr(anthropic, '__version__', 'unknown'),
+                    'has_client_class': hasattr(anthropic, 'Client'),
+                    'has_anthropic_class': hasattr(anthropic, 'Anthropic')
+                }
+            except ImportError:
+                anthropic_info = {'error': 'Anthropic not installed'}
             
             # Get environment variables (excluding sensitive data)
             env_vars = {k: v for k, v in os.environ.items() 
                        if not any(sensitive in k.lower() for sensitive in 
                                  ['key', 'secret', 'password', 'token', 'auth'])}
             
-            # Check Anthropic library
-            anthropic_version = getattr(anthropic, '__version__', 'unknown')
-            anthropic_client_class = hasattr(anthropic, 'Client')
-            anthropic_anthropic_class = hasattr(anthropic, 'Anthropic')
+            # Add Vercel-specific info
+            vercel_info = {
+                'is_vercel': bool(os.environ.get('VERCEL', False)),
+                'vercel_region': os.environ.get('VERCEL_REGION', 'unknown'),
+                'vercel_env': os.environ.get('VERCEL_ENV', 'unknown'),
+                'now_region': os.environ.get('NOW_REGION', 'unknown')
+            }
+            
+            # Check for CORS issues
+            cors_info = {
+                'allowed_origins': '*',  # CORS is configured to allow all origins
+                'preflight_support': True  # We support OPTIONS preflight requests
+            }
             
             return jsonify({
                 'python_version': sys.version,
                 'platform': platform.platform(),
-                'is_vercel': bool(os.environ.get('VERCEL', False)),
-                'anthropic_version': anthropic_version,
-                'has_client_class': anthropic_client_class,
-                'has_anthropic_class': anthropic_anthropic_class,
-                'env_vars': env_vars
+                'anthropic': anthropic_info,
+                'vercel': vercel_info,
+                'cors': cors_info,
+                'env_vars': env_vars,
+                'server_time': time.time(),
+                'request_headers': dict(request.headers)
             })
         except Exception as e:
             import traceback
@@ -165,7 +186,24 @@ if __name__ == "__main__":
 
 # Create handler for Vercel serverless functions
 def handler(environ, start_response):
-    return flask_app(environ, start_response)
+    try:
+        return flask_app(environ, start_response)
+    except Exception as e:
+        # Log the error
+        traceback_str = traceback.format_exc()
+        print(f"Unhandled exception in handler: {str(e)}\n{traceback_str}")
+        
+        # Set response headers for JSON
+        start_response('500 Internal Server Error', [
+            ('Content-Type', 'application/json'),
+            ('Access-Control-Allow-Origin', '*')
+        ])
+        
+        # Return a JSON error response
+        return [json.dumps({
+            "valid": False,
+            "message": f"Server error: {str(e)}"
+        }).encode('utf-8')]
 
 # Add explicit API routes for Vercel
 @flask_app.route('/api/validate-key', methods=['POST'])
@@ -185,6 +223,16 @@ def validate_key():
                 "message": "API key format is invalid. It should start with 'sk-ant'"
             }), 400
         
+        # Don't try to create an Anthropic client or make API calls on Vercel
+        # Just validate the format of the key
+        if os.environ.get('VERCEL', ''):
+            print("Running on Vercel, skipping Anthropic client creation")
+            return jsonify({
+                "valid": True,
+                "message": "API key format is valid"
+            })
+            
+        # For non-Vercel environments, try to create the client
         try:
             # Import inside function to avoid startup errors
             try:

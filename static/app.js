@@ -257,7 +257,22 @@ async function validateApiKey() {
             body: JSON.stringify({ api_key: apiKey })
         });
         
-        const data = await response.json();
+        let data;
+        try {
+            // Try to parse as JSON
+            data = await response.json();
+        } catch (parseError) {
+            // If JSON parsing fails, try to get the text response
+            const textResponse = await response.text();
+            console.error('Failed to parse response as JSON:', parseError);
+            console.error('Raw response:', textResponse);
+            
+            // Create a minimal response object for consistent handling
+            data = { 
+                valid: false, 
+                message: `Server returned invalid JSON. Status: ${response.status}. Please try again or contact support.` 
+            };
+        }
         
         if (response.ok && data.valid) {
             console.log('API key is valid');
