@@ -58,24 +58,21 @@
     },
     "api/validate-key.js": {
       "memory": 256,
-      "maxDuration": 10,
-      "runtime": "nodejs18.x"
+      "maxDuration": 10
     },
     "api/analyze-tokens.js": {
       "memory": 256,
-      "maxDuration": 10,
-      "runtime": "nodejs18.x"
+      "maxDuration": 10
     },
     "api/process-stream.js": {
       "memory": 512,
-      "maxDuration": 60,
-      "runtime": "nodejs18.x"
+      "maxDuration": 60
     }
   },
   "build": {
     "env": {
       "PYTHON_VERSION": "3.11",
-      "NODE_VERSION": "18.x"
+      "NODE_VERSION": "18"
     }
   },
   "headers": [
