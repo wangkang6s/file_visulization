@@ -22,6 +22,10 @@
       "source": "/api/process-stream",
       "destination": "/api/process-stream.js"
     },
+    {
+      "source": "/api/test-vercel",
+      "destination": "/api/test-vercel.js"
+    },
     { 
       "source": "/api/(.*)",
       "destination": "/api" 
@@ -67,6 +71,10 @@
     "api/process-stream.js": {
       "memory": 1024,
       "maxDuration": 300
+    },
+    "api/test-vercel.js": {
+      "memory": 128,
+      "maxDuration": 5
     }
   },
   "build": {
