@@ -1,17 +1,21 @@
-// Simple test endpoint to verify Vercel deployment
-module.exports = (req, res) => {
-  // Set CORS headers
+// Simple test function for Vercel
+module.exports = async (req, res) => {
+  // Set headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/json');
   
-  // Return a simple response with timestamp to verify deployment
-  res.status(200).json({
-    success: true,
-    message: "Vercel deployment is working! Updated version.",
-    version: "1.0.1",
+  // Return detailed information about the environment
+  return res.status(200).json({
+    status: 'success',
+    message: 'Vercel serverless function is working correctly',
     timestamp: new Date().toISOString(),
-    deployment_id: "6513b61fa", // Last git commit hash
-    update_time: "2025-03-17T03:30:00Z" // Fixed timestamp for verification
+    vercel_env: process.env.VERCEL_ENV || 'unknown',
+    node_version: process.version,
+    node_env: process.env.NODE_ENV || 'unknown',
+    region: process.env.VERCEL_REGION || 'unknown',
+    headers: req.headers,
+    method: req.method,
+    url: req.url,
+    query: req.query || {}
   });
 }; 

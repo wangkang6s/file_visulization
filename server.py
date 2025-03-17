@@ -542,13 +542,14 @@ def process_stream():
     # Prepare system prompt
     system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
     
-    # Prepare user prompt
+    # Prepare user prompt - limit content size to avoid timeouts
+    content_limit = min(len(content), 100000)  # Limit to 100k characters
     user_content = f"""
     {format_prompt}
     
     Here is the content to transform into a website:
     
-    {content}
+    {content[:content_limit]}
     """
     
     # Define a streaming response generator with specific Claude 3.7 implementation
@@ -583,61 +584,83 @@ def process_stream():
                 generated_text = ""
                 
                 for chunk in stream:
-                    # Handle thinking updates
-                    if hasattr(chunk, "thinking") and chunk.thinking:
-                        thinking_data = {
-                            "type": "thinking_update",
-                            "chunk_id": message_id,
-                            "thinking": {
-                                "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                    try:
+                        # Handle thinking updates
+                        if hasattr(chunk, "thinking") and chunk.thinking:
+                            thinking_data = {
+                                "type": "thinking_update",
+                                "chunk_id": message_id,
+                                "thinking": {
+                                    "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                                }
                             }
-                        }
-                        yield format_stream_event("content", thinking_data)
-                    
-                    # Handle content block deltas (the actual generated text)
-                    if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
-                        content_data = {
-                            "type": "content_block_delta",
-                            "chunk_id": message_id,
-                            "delta": {
-                                "text": chunk.delta.text
+                            yield format_stream_event("content", thinking_data)
+                        
+                        # Handle content block deltas (the actual generated text)
+                        if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
+                            content_data = {
+                                "type": "content_block_delta",
+                                "chunk_id": message_id,
+                                "delta": {
+                                    "text": chunk.delta.text
+                                }
                             }
-                        }
-                        generated_text += chunk.delta.text
-                        yield format_stream_event("content", content_data)
+                            generated_text += chunk.delta.text
+                            yield format_stream_event("content", content_data)
+                    except (ConnectionError, BrokenPipeError) as e:
+                        app.logger.error(f"Client disconnected: {str(e)}")
+                        # Exit the generator if the client disconnects
+                        return
                 
                 # Send message complete event with usage statistics when available
-                usage_data = None
-                if hasattr(stream, "usage"):
-                    usage_data = {
-                        "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
-                        "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
-                        "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                try:
+                    usage_data = None
+                    if hasattr(stream, "usage"):
+                        usage_data = {
+                            "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
+                            "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
+                            "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                        }
+                    
+                    complete_data = {
+                        "type": "message_complete",
+                        "message_id": message_id,
+                        "chunk_id": message_id,
+                        "usage": usage_data,
+                        "html": generated_text
                     }
-                
-                complete_data = {
-                    "type": "message_complete",
-                    "message_id": message_id,
-                    "chunk_id": message_id,
-                    "usage": usage_data,
-                    "html": generated_text
-                }
-                yield format_stream_event("content", complete_data)
-                yield format_stream_event("stream_end", {"message": "Stream complete"})
-            
+                    yield format_stream_event("content", complete_data)
+                    yield format_stream_event("stream_end", {"message": "Stream complete"})
+                except (ConnectionError, BrokenPipeError) as e:
+                    app.logger.error(f"Client disconnected during completion: {str(e)}")
+                    return
         except Exception as e:
-            error_data = {
-                "type": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
-            yield format_stream_event("error", error_data)
+            # Log the exception
+            app.logger.error(f"Error in stream_generator: {str(e)}")
+            app.logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Try to yield an error event, but catch connection errors
+            try:
+                error_data = {
+                    "type": "error",
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                }
+                yield format_stream_event("error", error_data)
+            except (ConnectionError, BrokenPipeError):
+                # Client already disconnected, just return
+                app.logger.error("Client disconnected while sending error")
+                return
     
-    # Return the streaming response
-    return Response(
+    # Return the streaming response with proper headers
+    response = Response(
         stream_with_context(stream_generator()),
         mimetype='text/event-stream'
     )
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'  # Disable buffering in Nginx
+    response.headers['Connection'] = 'keep-alive'
+    return response
 
 # Add a simple test endpoint
 @app.route('/api/test', methods=['GET', 'POST'])
