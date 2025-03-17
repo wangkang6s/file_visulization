@@ -57,16 +57,16 @@
       "maxDuration": 60
     },
     "api/validate-key.js": {
-      "memory": 256,
+      "memory": 512,
       "maxDuration": 10
     },
     "api/analyze-tokens.js": {
-      "memory": 256,
+      "memory": 512,
       "maxDuration": 10
     },
     "api/process-stream.js": {
-      "memory": 512,
-      "maxDuration": 60
+      "memory": 1024,
+      "maxDuration": 300
     }
   },
   "build": {
@@ -81,7 +81,9 @@
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" },
         { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" },
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate" },
+        { "key": "Connection", "value": "keep-alive" }
       ]
     }
   ]
