@@ -42,9 +42,8 @@ module.exports = (req, res) => {
       });
     }
     
-    // Estimate token count based on a simple heuristic
-    // This is a very rough approximation - Claude's actual tokenization is more complex
-    const tokenCount = estimateTokenCount(content);
+    // Estimate token count based on a more accurate heuristic
+    const tokenCount = estimateTokenCount(content, fileType);
     
     // Format cost estimate with 6 decimal places
     const costEstimate = (tokenCount / 1000000 * 3.0).toFixed(6);
@@ -58,8 +57,9 @@ module.exports = (req, res) => {
       cost_estimate: parseFloat(costEstimate),
       estimated_cost: parseFloat(costEstimate),
       cost_estimate_str: '$' + costEstimate,
-      message: 'Token count estimated (Vercel serverless)',
-      max_safe_output_tokens: Math.min(128000, 200000 - tokenCount - 5000) // Similar to server.py logic
+      message: '⚠️ VERCEL DEPLOYMENT: Token count estimated without using Claude API. For accurate counts, please run locally.',
+      max_safe_output_tokens: Math.min(128000, 200000 - tokenCount - 5000), // Similar to server.py logic
+      is_vercel: true // Flag to indicate this is the Vercel version
     });
     
   } catch (error) {
@@ -72,18 +72,78 @@ module.exports = (req, res) => {
   }
 };
 
-// Simple token count estimator
-function estimateTokenCount(text) {
+// More accurate token count estimator based on file type
+function estimateTokenCount(text, fileType) {
   if (!text) return 0;
   
-  // Count words (split by whitespace)
-  const words = text.trim().split(/\s+/).length;
+  // Base calculation
+  const charCount = text.length;
+  const wordCount = text.trim().split(/\s+/).length;
   
-  // Estimate tokens (Claude uses about 1.3 tokens per word on average)
-  const estimatedTokens = Math.ceil(words * 1.3);
+  // Different multipliers based on file type
+  let tokenMultiplier = 1.3; // Default multiplier (about 1.3 tokens per word for English text)
+  
+  // Adjust multiplier based on file type
+  switch(fileType.toLowerCase()) {
+    case 'code':
+    case 'js':
+    case 'javascript':
+    case 'py':
+    case 'python':
+    case 'java':
+    case 'c':
+    case 'cpp':
+    case 'cs':
+    case 'go':
+    case 'rust':
+    case 'php':
+    case 'ruby':
+    case 'swift':
+    case 'kotlin':
+    case 'typescript':
+    case 'ts':
+      // Code tends to have more tokens per word due to symbols, operators, etc.
+      tokenMultiplier = 1.5;
+      break;
+    case 'json':
+    case 'xml':
+    case 'yaml':
+    case 'yml':
+    case 'toml':
+    case 'csv':
+      // Structured data formats have even more tokens per word
+      tokenMultiplier = 1.7;
+      break;
+    case 'html':
+    case 'css':
+    case 'scss':
+    case 'sass':
+    case 'less':
+      // Markup and style languages
+      tokenMultiplier = 1.6;
+      break;
+    case 'markdown':
+    case 'md':
+    case 'txt':
+    case 'text':
+      // Plain text or markdown
+      tokenMultiplier = 1.3;
+      break;
+    default:
+      // Default case
+      tokenMultiplier = 1.3;
+  }
+  
+  // Calculate estimated tokens using both character and word count
+  // This is a more sophisticated approach that works better for different languages and formats
+  const charBasedEstimate = charCount / 3.5; // Roughly 3.5 characters per token on average
+  const wordBasedEstimate = wordCount * tokenMultiplier;
+  
+  // Take the average of the two estimates
+  const estimatedTokens = Math.ceil((charBasedEstimate + wordBasedEstimate) / 2);
   
   // Add a small buffer for safety
-  return estimatedTokens + 10;
+  return estimatedTokens + 20;
 }
 
 // Helper function to format numbers with commas
