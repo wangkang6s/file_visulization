@@ -20,10 +20,10 @@ for port in {5000..5010}; do
 done
 
 # Set default port if not provided
-PORT=${1:-5001}
+PORT=${1:-5009}
 echo "Starting server on port $PORT..."
 
-# Start the server without debug mode
-python server.py --port=$PORT --no-debug
+# Start the server (removed the --no-debug flag which was causing issues)
+python server.py --port=$PORT --no-reload
 
 echo "Server stopped."

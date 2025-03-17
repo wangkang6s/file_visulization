@@ -26,6 +26,8 @@ module.exports = async (req, res) => {
     const apiKey = body.api_key || '';
     const maxTokens = body.max_tokens || 128000;
     const thinkingBudget = body.thinking_budget || 32000;
+    const temperature = body.temperature || 0.5;
+    const formatPrompt = body.format_prompt || '';
     
     if (!content) {
       return res.status(400).json({
@@ -55,11 +57,13 @@ module.exports = async (req, res) => {
     const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
     
     // Format user content
-    const userContent = `Generate HTML for this content: ${content.substring(0, Math.min(content.length, 3000))}`;
+    const userContent = formatPrompt ? 
+      `${formatPrompt}\n\nGenerate HTML for this content: ${content.substring(0, Math.min(content.length, 100000))}` :
+      `Generate HTML for this content: ${content.substring(0, Math.min(content.length, 100000))}`;
     
-    // Always send an initial chunk to keep connection alive
+    // Send a chunk to keep connection alive 
     res.write('event: message\n');
-    res.write('data: {"type":"chunk","content":"Processing with Claude..."}\n\n');
+    res.write('data: {"type":"delta","content":"Processing with Claude..."}\n\n');
     
     // Import and use Anthropic
     const Anthropic = await import('anthropic');
@@ -71,6 +75,7 @@ module.exports = async (req, res) => {
     const message = await anthropic.messages.create({
       model: 'claude-3-7-sonnet-20240307',
       max_tokens: maxTokens,
+      temperature: temperature,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       stream: true
@@ -84,9 +89,23 @@ module.exports = async (req, res) => {
         const textChunk = chunk.delta.text;
         htmlOutput += textChunk;
         
-        // Send chunk - EXACTLY as expected by app.js
+        // Send chunk in the format expected by app.js
         res.write('event: message\n');
-        res.write(`data: {"type":"chunk","content":"${escape(textChunk)}"}\n\n`);
+        res.write(`data: {"type":"delta","content":"${escape(textChunk)}"}\n\n`);
+        
+        // Send flush to ensure data is sent immediately
+        if (res.flush) {
+          res.flush();
+        }
+      }
+      // Also handle thinking type responses if they exist
+      else if (chunk.type === 'thinking') {
+        res.write('event: message\n');
+        res.write(`data: {"type":"thinking_update","thinking":{"content":"${escape(chunk.thinking ? chunk.thinking.content : '')}"}}}\n\n`);
+        
+        if (res.flush) {
+          res.flush();
+        }
       }
     }
     
