@@ -264,11 +264,11 @@ async function validateApiKey() {
             // Save the API key
             localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             state.apiKey = apiKey;
-            showNotification('API key is valid', 'success');
+            showNotification(data.message || 'API key is valid', 'success');
             updateKeyStatus('valid');
             return apiKey;
         } else {
-            console.error('API key validation failed:', data.message);
+            console.error('API key validation failed:', data.message || 'Unknown error');
             showNotification(data.message || 'Invalid API key', 'error');
             updateKeyStatus('invalid');
             return null;
