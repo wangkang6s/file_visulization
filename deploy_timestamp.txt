@@ -1,2 +1,0 @@
-Last deployed: 2025-03-16
-Fixed: API key validation in client-side code 
