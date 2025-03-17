@@ -257,36 +257,42 @@ async function validateApiKey() {
             body: JSON.stringify({ api_key: apiKey })
         });
         
-        let data;
+        // Get response text once
+        let responseData;
         try {
-            // Try to parse as JSON
-            data = await response.json();
-        } catch (parseError) {
-            // If JSON parsing fails, try to get the text response
-            const textResponse = await response.text();
-            console.error('Failed to parse response as JSON:', parseError);
-            console.error('Raw response:', textResponse);
+            responseData = await response.text();
             
-            // Create a minimal response object for consistent handling
-            data = { 
-                valid: false, 
-                message: `Server returned invalid JSON. Status: ${response.status}. Please try again or contact support.` 
-            };
-        }
-        
-        if (response.ok && data.valid) {
-            console.log('API key is valid');
-            // Save the API key
-            localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-            state.apiKey = apiKey;
-            showNotification(data.message || 'API key is valid', 'success');
-            updateKeyStatus('valid');
-            return apiKey;
-        } else {
-            console.error('API key validation failed:', data.message || 'Unknown error');
-            showNotification(data.message || 'Invalid API key', 'error');
-            updateKeyStatus('invalid');
-            return null;
+            // Try to parse as JSON
+            let data;
+            try {
+                data = JSON.parse(responseData);
+            } catch (parseError) {
+                console.error('Failed to parse response as JSON:', parseError);
+                console.error('Raw response:', responseData);
+                
+                // Create a minimal response object for consistent handling
+                data = { 
+                    valid: false, 
+                    message: `Server returned invalid JSON. Status: ${response.status}. Please try again or contact support.` 
+                };
+            }
+            
+            if (response.ok && data.valid) {
+                console.log('API key is valid');
+                // Save the API key
+                localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+                state.apiKey = apiKey;
+                showNotification(data.message || 'API key is valid', 'success');
+                updateKeyStatus('valid');
+                return apiKey;
+            } else {
+                console.error('API key validation failed:', data.message || 'Unknown error');
+                showNotification(data.message || 'Invalid API key', 'error');
+                updateKeyStatus('invalid');
+                return null;
+            }
+        } catch (readError) {
+            throw new Error(`Failed to read response: ${readError.message}`);
         }
     } catch (error) {
         console.error('Error validating API key:', error);

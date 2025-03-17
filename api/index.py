@@ -187,23 +187,58 @@ if __name__ == "__main__":
 # Create handler for Vercel serverless functions
 def handler(environ, start_response):
     try:
-        return flask_app(environ, start_response)
+        # Add CORS headers to all responses
+        def custom_start_response(status, headers, exc_info=None):
+            cors_headers = [
+                ('Access-Control-Allow-Origin', '*'),
+                ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                ('Access-Control-Allow-Headers', 'Content-Type, Authorization'),
+                ('Access-Control-Max-Age', '3600')
+            ]
+            
+            # Check if Content-Type header is present
+            has_content_type = any(h[0].lower() == 'content-type' for h in headers)
+            if not has_content_type:
+                # Add a default JSON content type if not present
+                headers.append(('Content-Type', 'application/json'))
+            
+            # Add CORS headers
+            headers.extend([h for h in cors_headers if not any(existing[0].lower() == h[0].lower() for existing in headers)])
+            
+            return start_response(status, headers, exc_info)
+        
+        # Handle OPTIONS requests directly for CORS preflight
+        if environ.get('REQUEST_METHOD') == 'OPTIONS':
+            custom_start_response('200 OK', [
+                ('Content-Type', 'text/plain'),
+                ('Content-Length', '0')
+            ])
+            return [b'']
+            
+        # Forward to Flask app with enhanced response handling
+        return flask_app(environ, custom_start_response)
+        
     except Exception as e:
         # Log the error
         traceback_str = traceback.format_exc()
         print(f"Unhandled exception in handler: {str(e)}\n{traceback_str}")
         
-        # Set response headers for JSON
-        start_response('500 Internal Server Error', [
-            ('Content-Type', 'application/json'),
-            ('Access-Control-Allow-Origin', '*')
-        ])
-        
-        # Return a JSON error response
-        return [json.dumps({
+        # Create JSON error response with proper CORS headers
+        error_json = json.dumps({
             "valid": False,
             "message": f"Server error: {str(e)}"
-        }).encode('utf-8')]
+        }).encode('utf-8')
+        
+        # Set response headers with CORS
+        start_response('500 Internal Server Error', [
+            ('Content-Type', 'application/json'),
+            ('Content-Length', str(len(error_json))),
+            ('Access-Control-Allow-Origin', '*'),
+            ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+            ('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        ])
+        
+        return [error_json]
 
 # Add explicit API routes for Vercel
 @flask_app.route('/api/validate-key', methods=['POST'])
@@ -212,47 +247,47 @@ def validate_key():
         # Get API key from request
         data = request.get_json()
         if not data or 'api_key' not in data:
+            print("Missing API key in request")
             return jsonify({"valid": False, "message": "API key is required"}), 400
         
         api_key = data['api_key']
+        print(f"Received API key validation request, key prefix: {api_key[:7]}...")
         
         # Basic validation - check for Anthropic key format
         if not api_key.startswith('sk-ant'):
+            print("Invalid API key format (doesn't start with sk-ant)")
             return jsonify({
                 "valid": False, 
                 "message": "API key format is invalid. It should start with 'sk-ant'"
             }), 400
         
-        # Don't try to create an Anthropic client or make API calls on Vercel
-        # Just validate the format of the key
+        # For Vercel, just validate the format without creating a client
         if os.environ.get('VERCEL', ''):
             print("Running on Vercel, skipping Anthropic client creation")
             return jsonify({
                 "valid": True,
                 "message": "API key format is valid"
             })
-            
+        
         # For non-Vercel environments, try to create the client
         try:
             # Import inside function to avoid startup errors
-            try:
-                from anthropic import Anthropic
-                
-                # Initialize client
-                client = Anthropic(api_key=api_key)
-                
-                # Don't actually make API calls for security - just consider it valid if client creation works
-                return jsonify({
-                    "valid": True,
-                    "message": "API key is valid"
-                })
-            except ImportError as ie:
-                print(f"ImportError: {str(ie)}")
-                return jsonify({
-                    "valid": False,
-                    "message": "Failed to import Anthropic client library"
-                }), 500
-                
+            from anthropic import Anthropic
+            
+            # Initialize client without making API calls
+            client = Anthropic(api_key=api_key)
+            
+            print("API key validated successfully")
+            return jsonify({
+                "valid": True,
+                "message": "API key is valid"
+            })
+        except ImportError as ie:
+            print(f"ImportError: {str(ie)}")
+            return jsonify({
+                "valid": False,
+                "message": "Failed to import Anthropic client library"
+            }), 500
         except Exception as e:
             error_message = str(e)
             print(f"API client error: {error_message}")
@@ -261,13 +296,13 @@ def validate_key():
             if "proxies" in error_message.lower():
                 # This is a client configuration issue, not an invalid key
                 return jsonify({
-                    "valid": True,  # Consider the key valid despite the client error
+                    "valid": True,
                     "message": "API key format is valid, but there was a client configuration issue"
                 })
             
             return jsonify({
                 "valid": False,
-                "message": "API client configuration error. Please try using a newer Anthropic API key format."
+                "message": "API client configuration error: " + error_message
             }), 400
             
     except Exception as e:
