@@ -87,7 +87,7 @@ module.exports = (req, res) => {
         
         // Send a message to indicate the process has started
         res.write('event: message\n');
-        res.write(`data: {"type":"content","chunk_id":"${messageId}","type":"processing","message":"Processing with Claude..."}\n\n`);
+        res.write(`data: {"type":"content","chunk_id":"${messageId}","delta":{"text":"Processing with Claude..."}}\n\n`);
         
         try {
           // Create the message parameters to match local server as closely as possible
@@ -159,10 +159,11 @@ module.exports = (req, res) => {
           const completeData = {
             type: "content",
             chunk_id: messageId,
-            type: "message_complete",
-            message_id: messageId,
-            usage: usageData,
-            html: htmlOutput
+            message_complete: {
+              message_id: messageId,
+              usage: usageData,
+              html: htmlOutput
+            }
           };
           
           res.write('event: message\n');
