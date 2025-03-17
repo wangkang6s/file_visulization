@@ -1,4 +1,4 @@
-// Simple process-stream function for Vercel
+// Process stream function for Vercel using Anthropic API
 module.exports = (req, res) => {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -23,9 +23,6 @@ module.exports = (req, res) => {
   }
   
   try {
-    // Log the request body for debugging
-    console.log('Request body:', req.body);
-    
     // Get content from request body
     const body = req.body || {};
     
@@ -37,8 +34,10 @@ module.exports = (req, res) => {
     
     const fileType = body.file_type || 'txt';
     const apiKey = body.api_key || '';
+    const maxTokens = body.max_tokens || 128000;
+    const thinkingBudget = body.thinking_budget || 32000;
     
-    // Check if content is provided
+    // Check if content and API key are provided
     if (!content) {
       return res.status(400).json({
         success: false,
@@ -46,52 +45,91 @@ module.exports = (req, res) => {
       });
     }
     
+    if (!apiKey || !apiKey.startsWith('sk-ant')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid Anthropic API key is required'
+      });
+    }
+    
     // Start streaming response
     // Send initial message
     res.write('event: message\n');
-    res.write(`data: {"type":"start","message":"⚠️ VERCEL DEPLOYMENT: This is a simplified HTML generation without using Claude API. For full functionality, please run locally."}\n\n`);
+    res.write(`data: {"type":"start","message":"Starting HTML generation with Claude API..."}\n\n`);
     
-    // Add a small delay to simulate processing
-    setTimeout(() => {
-      // Generate a simple HTML representation
-      const htmlContent = generateSimpleHTML(content, fileType);
-      
-      // Split the HTML into chunks to simulate streaming
-      const chunks = splitIntoChunks(htmlContent, 500);
-      
-      // Track the collected HTML for the final message
-      let collectedHtml = '';
-      
-      // Send chunks with a small delay to simulate streaming
-      let chunkIndex = 0;
-      
-      const sendNextChunk = () => {
-        if (chunkIndex < chunks.length) {
-          const chunk = chunks[chunkIndex];
-          collectedHtml += chunk;
-          
-          res.write('event: message\n');
-          res.write(`data: {"type":"chunk","content":"${escapeJSON(chunk)}"}\n\n`);
-          chunkIndex++;
-          
-          // Schedule next chunk
-          setTimeout(sendNextChunk, 100);
-        } else {
-          // Send completion message with the full HTML
-          res.write('event: message\n');
-          res.write(`data: {"type":"message_complete","message_id":"vercel-${Date.now()}","usage":{"input_tokens":${estimateTokenCount(content)},"output_tokens":${estimateTokenCount(htmlContent)},"thinking_tokens":0},"html":"${escapeJSON(htmlContent)}"}\n\n`);
-          
-          // Send end message
-          res.write('event: message\n');
-          res.write(`data: {"type":"end","message":"⚠️ VERCEL DEPLOYMENT: HTML generation complete without using Claude API. For full functionality, please run locally."}\n\n`);
-          res.end();
+    // Import Anthropic (using dynamic import)
+    import('anthropic').then(async (Anthropic) => {
+      try {
+        // Create an Anthropic client
+        const anthropic = new Anthropic.Anthropic({
+          apiKey: apiKey
+        });
+        
+        // Generate system prompt based on file type
+        const systemPrompt = generateSystemPrompt(fileType);
+        
+        // Send a message to indicate the process has started
+        res.write('event: message\n');
+        res.write(`data: {"type":"processing","message":"Processing with Claude..."}\n\n`);
+        
+        // Create the message parameters
+        const message = await anthropic.messages.create({
+          model: 'claude-3-7-sonnet-20240307',
+          max_tokens: maxTokens,
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: content
+            }
+          ],
+          stream: true
+        });
+        
+        // Collect the streaming response
+        let htmlOutput = '';
+        let messageId = '';
+        
+        // Process the streaming response
+        for await (const chunk of message) {
+          if (chunk.type === 'message_start') {
+            messageId = chunk.message.id;
+          } else if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
+            const textChunk = chunk.delta.text;
+            htmlOutput += textChunk;
+            
+            // Send the chunk to the client
+            res.write('event: message\n');
+            res.write(`data: {"type":"chunk","content":"${escapeJSON(textChunk)}"}\n\n`);
+          }
         }
-      };
+        
+        // Calculate token usage
+        const tokenCount = estimateTokenCount(content);
+        const outputTokens = estimateTokenCount(htmlOutput);
+        
+        // Send completion message with the full HTML
+        res.write('event: message\n');
+        res.write(`data: {"type":"message_complete","message_id":"${messageId}","usage":{"input_tokens":${tokenCount},"output_tokens":${outputTokens},"thinking_tokens":${thinkingBudget}},"html":"${escapeJSON(htmlOutput)}"}\n\n`);
+        
+        // Send end message
+        res.write('event: message\n');
+        res.write(`data: {"type":"end","message":"HTML generation complete"}\n\n`);
+        res.end();
+      } catch (error) {
+        console.error('Anthropic API error:', error);
+        
+        res.write('event: message\n');
+        res.write(`data: {"type":"error","error":"Anthropic API error: ${escapeJSON(error.message)}"}\n\n`);
+        res.end();
+      }
+    }).catch(error => {
+      console.error('Failed to import Anthropic:', error);
       
-      // Start sending chunks
-      sendNextChunk();
-    }, 1000); // Add a 1-second delay to make it clear this is a simulation
-    
+      res.write('event: message\n');
+      res.write(`data: {"type":"error","error":"Failed to import Anthropic: ${escapeJSON(error.message)}"}\n\n`);
+      res.end();
+    });
   } catch (error) {
     // Handle any errors
     console.error('Process stream error:', error);
@@ -110,71 +148,69 @@ module.exports = (req, res) => {
   }
 };
 
-// Generate a simple HTML representation of the content
-function generateSimpleHTML(content, fileType) {
-  // Create a basic HTML structure
-  let html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>File Visualization</title>
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; color: #333; }
-    pre { background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
-    .highlight { background-color: #ffffcc; }
-    h1, h2 { color: #333; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-    .note { background-color: #f8f9fa; padding: 15px; border-left: 4px solid #dc3545; margin: 20px 0; }
-    .warning { color: #dc3545; font-weight: bold; }
-    code { font-family: monospace; background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>File Visualization</h1>
-    <div class="note">
-      <p class="warning">⚠️ IMPORTANT: This is a simplified HTML representation generated by the Vercel serverless function WITHOUT using Claude API.</p>
-      <p>For full Claude-powered visualization with AI analysis, please run the application locally with your API key.</p>
-    </div>
-    
-    <h2>Content Preview</h2>
-    <pre>${escapeHTML(content)}</pre>
-    
-    <h2>File Type</h2>
-    <p><code>${escapeHTML(fileType)}</code></p>
-    
-    <h2>About This Visualization</h2>
-    <p>This is a placeholder response for the Vercel deployment. The actual Claude-powered visualization 
-    requires your API key and is only available when running locally.</p>
-    
-    <h3>How to Run Locally</h3>
-    <ol>
-      <li>Clone the repository: <code>git clone https://github.com/hubeiqiao/File-Visualizer.git</code></li>
-      <li>Install dependencies: <code>pip install -r requirements.txt</code></li>
-      <li>Run the server: <code>python server.py --port 5009 --no-reload</code></li>
-      <li>Open <a href="http://localhost:5009">http://localhost:5009</a> in your browser</li>
-      <li>Enter your Anthropic API key and enjoy the full functionality!</li>
-    </ol>
-    
-    <div class="note">
-      <p class="warning">⚠️ NOTE: The Vercel deployment cannot use the Anthropic API because it would require exposing your API key.</p>
-      <p>For security reasons, we only provide a simplified visualization here. To use Claude's powerful AI capabilities, please run locally.</p>
-    </div>
-  </div>
-</body>
-</html>`;
-
-  return html;
-}
-
-// Split text into chunks of specified size
-function splitIntoChunks(text, chunkSize) {
-  const chunks = [];
-  for (let i = 0; i < text.length; i += chunkSize) {
-    chunks.push(text.substring(i, i + chunkSize));
+// Generate system prompt based on file type
+function generateSystemPrompt(fileType) {
+  let fileTypePrompt = "";
+  
+  // Customize prompt based on file type
+  switch(fileType.toLowerCase()) {
+    case 'code':
+    case 'js':
+    case 'javascript':
+    case 'py':
+    case 'python':
+    case 'java':
+    case 'c':
+    case 'cpp':
+    case 'cs':
+    case 'go':
+    case 'rust':
+    case 'php':
+    case 'ruby':
+    case 'swift':
+    case 'kotlin':
+    case 'typescript':
+    case 'ts':
+      fileTypePrompt = "The input is source code. Please provide a detailed explanation of what this code does, including function explanations, API usage, algorithm analysis, and potential bugs or improvements.";
+      break;
+    case 'json':
+    case 'xml':
+    case 'yaml':
+    case 'yml':
+    case 'toml':
+      fileTypePrompt = "The input is structured data. Please provide a visualization and explanation of this data structure, highlighting key elements and relationships.";
+      break;
+    case 'html':
+    case 'css':
+    case 'scss':
+      fileTypePrompt = "The input is web markup/styling. Please analyze the structure, styles, and potential rendering, suggesting improvements or issues.";
+      break;
+    case 'markdown':
+    case 'md':
+      fileTypePrompt = "The input is markdown text. Please convert it to a beautifully formatted HTML representation with proper styling.";
+      break;
+    case 'txt':
+    case 'text':
+    default:
+      fileTypePrompt = "The input is plain text. Please analyze and structure this content into a well-formatted HTML document.";
   }
-  return chunks;
+  
+  // Generate the complete system prompt
+  return `You are an expert file visualization agent that creates HTML representations of various file types. Your goal is to generate a well-structured, informative HTML document that helps users understand the content of their files.
+
+${fileTypePrompt}
+
+Your output must follow these rules:
+1. Return ONLY valid HTML that can be directly injected into a web page. Do not include any markdown, explanations outside the HTML, or code blocks.
+2. Include a complete HTML document with <html>, <head>, and <body> tags.
+3. Include appropriate styling using internal CSS to make your visualization visually appealing and easy to understand.
+4. Use semantic HTML elements where appropriate.
+5. Include syntax highlighting for code samples.
+6. Add visual elements like tables, lists, or sections to organize information.
+7. Ensure your HTML is valid and properly escaped.
+8. Provide a thorough analysis of the file content.
+
+Return the complete HTML document as your response.`;
 }
 
 // Escape HTML special characters
@@ -198,16 +234,19 @@ function escapeJSON(text) {
     .replace(/\f/g, '\\f');
 }
 
-// Simple token count estimator
+// Token count estimator
 function estimateTokenCount(text) {
   if (!text) return 0;
   
-  // Count words (split by whitespace)
-  const words = String(text).trim().split(/\s+/).length;
+  // Base calculation using the same method as in the Python code
+  const charCount = text.length;
+  const wordCount = text.trim().split(/\s+/).length;
   
-  // Estimate tokens (Claude uses about 1.3 tokens per word on average)
-  const estimatedTokens = Math.ceil(words * 1.3);
+  // Use the same multiplier as in the Python code
+  const avgTokensPerWord = 1.3;
   
-  // Add a small buffer for safety
-  return estimatedTokens + 10;
+  // Calculate tokens based on words with character-based adjustment
+  const tokenEstimate = Math.round(wordCount * avgTokensPerWord);
+  
+  return tokenEstimate;
 } 
