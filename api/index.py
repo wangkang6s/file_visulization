@@ -170,55 +170,42 @@ def handler(environ, start_response):
 @flask_app.route('/api/validate-key', methods=['POST'])
 def validate_key():
     try:
+        # Get API key from request
         data = request.get_json()
-        api_key = data.get('api_key')
+        if not data or 'api_key' not in data:
+            return jsonify({"error": "Missing API key", "valid": False}), 400
         
-        # If no API key is provided
-        if not api_key:
-            return jsonify({
-                "valid": False,
-                "message": "No API key provided"
-            })
+        api_key = data['api_key']
         
-        # Import here to avoid loading at module level
+        # Basic validation
+        if not api_key.startswith('sk-'):
+            return jsonify({"error": "Invalid API key format", "valid": False}), 400
+        
         try:
+            # Import inside function to avoid startup errors
             from anthropic import Anthropic
-        except ImportError as e:
-            return jsonify({
-                "valid": False,
-                "message": f"Error importing Anthropic: {str(e)}"
-            })
-        
-        # Initialize the Anthropic client with the API key
-        try:
-            client = Anthropic(api_key=api_key)
-        except Exception as e:
-            return jsonify({
-                "valid": False,
-                "message": f"Error initializing Anthropic client: {str(e)}"
-            })
-        
-        # Try a simple API call to validate the key
-        try:
-            models = client.models.list()
             
-            return jsonify({
-                "valid": True,
-                "message": "API key is valid",
-                "models": [model.id for model in models.data]
-            })
-        except Exception as e:
-            error_message = str(e)
-            return jsonify({
-                "valid": False,
-                "message": f"API key validation failed: {error_message}"
-            })
+            # Initialize client
+            client = Anthropic(api_key=api_key)
+            
+            # Test API key with a simple models list call
+            try:
+                models = client.models.list()
+                return jsonify({
+                    "valid": True,
+                    "models": [model.id for model in models.data] if hasattr(models, 'data') else []
+                })
+            except Exception as e:
+                # Handle API specific errors
+                error_message = str(e)
+                return jsonify({"error": error_message, "valid": False}), 400
+                
+        except ImportError:
+            return jsonify({"error": "Failed to import Anthropic client", "valid": False}), 500
+            
     except Exception as e:
         # Catch-all for any other errors
-        return jsonify({
-            "valid": False,
-            "message": f"Server error during validation: {str(e)}"
-        })
+        return jsonify({"error": f"Error validating API key: {str(e)}", "valid": False}), 500
 
 @flask_app.route('/api/analyze-tokens', methods=['POST'])
 def analyze_tokens():
@@ -280,13 +267,7 @@ def process_stream():
         client = Anthropic(api_key=api_key)
         
         # Prepare system prompt and user content
-        system_prompt = """
-        You are a professional web developer helping to create a beautiful and functional static HTML website.
-        The user will provide either text content or file contents, and you will generate a complete, self-contained HTML website.
-        The website should be styled attractively with modern CSS and should not rely on external libraries unless specifically requested.
-        Ensure that the HTML, CSS, and any JavaScript is complete, valid, and ready to use without external dependencies.
-        The generated website should follow responsive design principles and work well on both desktop and mobile devices.
-        """
+        system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
         
         user_content = f"""
         {format_prompt}
@@ -438,13 +419,7 @@ def process():
         client = Anthropic(api_key=api_key)
         
         # Prepare system prompt and user message
-        system_prompt = """
-        You are a professional web developer helping to create a beautiful and functional static HTML website.
-        The user will provide either text content or file contents, and you will generate a complete, self-contained HTML website.
-        The website should be styled attractively with modern CSS and should not rely on external libraries unless specifically requested.
-        Ensure that the HTML, CSS, and any JavaScript is complete, valid, and ready to use without external dependencies.
-        The generated website should follow responsive design principles and work well on both desktop and mobile devices.
-        """
+        system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
         
         user_message = f"""
         {format_prompt}
