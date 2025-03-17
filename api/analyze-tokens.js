@@ -46,23 +46,20 @@ module.exports = (req, res) => {
     // This is a very rough approximation - Claude's actual tokenization is more complex
     const tokenCount = estimateTokenCount(content);
     
-    // Format the cost estimate with locale string to match frontend expectations
+    // Format cost estimate with 6 decimal places
     const costEstimate = (tokenCount / 1000000 * 3.0).toFixed(6);
     
-    // Format token count as string to avoid frontend errors
-    const tokenCountStr = tokenCount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    
-    // Format cost estimate as string with proper formatting
-    const costEstimateStr = '$' + costEstimate.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    
-    // Return the estimated token count in the format expected by the frontend
+    // Return the estimated token count with ALL fields needed by the frontend
     return res.status(200).json({
       success: true,
       token_count: tokenCount,
-      token_count_str: tokenCountStr,
-      cost_estimate: costEstimate,
-      cost_estimate_str: costEstimateStr,
-      message: 'Token count estimated (Vercel serverless)'
+      estimated_tokens: tokenCount,
+      token_count_str: formatNumberWithCommas(tokenCount),
+      cost_estimate: parseFloat(costEstimate),
+      estimated_cost: parseFloat(costEstimate),
+      cost_estimate_str: '$' + costEstimate,
+      message: 'Token count estimated (Vercel serverless)',
+      max_safe_output_tokens: Math.min(128000, 200000 - tokenCount - 5000) // Similar to server.py logic
     });
     
   } catch (error) {
@@ -87,4 +84,12 @@ function estimateTokenCount(text) {
   
   // Add a small buffer for safety
   return estimatedTokens + 10;
+}
+
+// Helper function to format numbers with commas
+function formatNumberWithCommas(number) {
+  if (number === undefined || number === null) {
+    return "0";
+  }
+  return number.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 } 

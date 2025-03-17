@@ -6,6 +6,7 @@ module.exports = (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Content-Type', 'text/event-stream');
   
   // Handle OPTIONS request (CORS preflight)
   if (req.method === 'OPTIONS') {
@@ -45,12 +46,7 @@ module.exports = (req, res) => {
       });
     }
     
-    // For Vercel, we'll return a simplified HTML representation
-    // since we can't use the actual Claude API without exposing API keys
-    
-    // Set response headers for streaming
-    res.setHeader('Content-Type', 'text/event-stream');
-    
+    // Start streaming response
     // Send initial message
     res.write('event: message\n');
     res.write(`data: {"type":"start","message":"Starting HTML generation (Vercel serverless)"}\n\n`);
@@ -61,12 +57,17 @@ module.exports = (req, res) => {
     // Split the HTML into chunks to simulate streaming
     const chunks = splitIntoChunks(htmlContent, 500);
     
+    // Track the collected HTML for the final message
+    let collectedHtml = '';
+    
     // Send chunks with a small delay to simulate streaming
     let chunkIndex = 0;
     
     const sendNextChunk = () => {
       if (chunkIndex < chunks.length) {
         const chunk = chunks[chunkIndex];
+        collectedHtml += chunk;
+        
         res.write('event: message\n');
         res.write(`data: {"type":"chunk","content":"${escapeJSON(chunk)}"}\n\n`);
         chunkIndex++;
@@ -74,7 +75,11 @@ module.exports = (req, res) => {
         // Schedule next chunk
         setTimeout(sendNextChunk, 100);
       } else {
-        // Send completion message
+        // Send completion message with the full HTML
+        res.write('event: message\n');
+        res.write(`data: {"type":"message_complete","message_id":"vercel-${Date.now()}","usage":{"input_tokens":${estimateTokenCount(content)},"output_tokens":${estimateTokenCount(htmlContent)},"thinking_tokens":0},"html":"${escapeJSON(htmlContent)}"}\n\n`);
+        
+        // Send end message
         res.write('event: message\n');
         res.write(`data: {"type":"end","message":"HTML generation complete"}\n\n`);
         res.end();
@@ -87,10 +92,18 @@ module.exports = (req, res) => {
   } catch (error) {
     // Handle any errors
     console.error('Process stream error:', error);
-    return res.status(500).json({
-      success: false,
-      error: `Error processing stream: ${error.message}`
-    });
+    try {
+      // Send error as SSE message
+      res.write('event: message\n');
+      res.write(`data: {"type":"error","error":"${escapeJSON(error.message)}"}\n\n`);
+      res.end();
+    } catch (e) {
+      // If we can't send as SSE, try JSON
+      res.status(500).json({
+        success: false,
+        error: `Error processing stream: ${error.message}`
+      });
+    }
   }
 };
 
@@ -157,7 +170,7 @@ function splitIntoChunks(text, chunkSize) {
 
 // Escape HTML special characters
 function escapeHTML(text) {
-  return String(text)
+  return String(text || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -167,11 +180,25 @@ function escapeHTML(text) {
 
 // Escape special characters for JSON
 function escapeJSON(text) {
-  return String(text)
+  return String(text || '')
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '\\r')
     .replace(/\t/g, '\\t')
     .replace(/\f/g, '\\f');
+}
+
+// Simple token count estimator
+function estimateTokenCount(text) {
+  if (!text) return 0;
+  
+  // Count words (split by whitespace)
+  const words = String(text).trim().split(/\s+/).length;
+  
+  // Estimate tokens (Claude uses about 1.3 tokens per word on average)
+  const estimatedTokens = Math.ceil(words * 1.3);
+  
+  // Add a small buffer for safety
+  return estimatedTokens + 10;
 } 

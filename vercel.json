@@ -58,20 +58,34 @@
     },
     "api/validate-key.js": {
       "memory": 256,
-      "maxDuration": 10
+      "maxDuration": 10,
+      "runtime": "nodejs18.x"
     },
     "api/analyze-tokens.js": {
       "memory": 256,
-      "maxDuration": 10
+      "maxDuration": 10,
+      "runtime": "nodejs18.x"
     },
     "api/process-stream.js": {
       "memory": 512,
-      "maxDuration": 30
+      "maxDuration": 60,
+      "runtime": "nodejs18.x"
     }
   },
   "build": {
     "env": {
-      "PYTHON_VERSION": "3.11"
+      "PYTHON_VERSION": "3.11",
+      "NODE_VERSION": "18.x"
     }
-  }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+      ]
+    }
+  ]
 } 
