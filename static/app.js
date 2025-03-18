@@ -247,16 +247,9 @@ function setupEventListeners() {
         document.body.classList.add('ios-device');
     }
     
-    // Add event listener for test mode toggle
+    // Test mode toggle
     if (elements.testModeToggle) {
         elements.testModeToggle.addEventListener('change', toggleTestMode);
-        // Initialize test mode state from localStorage
-        const savedTestMode = localStorage.getItem('test_mode') === 'true';
-        if (savedTestMode) {
-            elements.testModeToggle.checked = true;
-            state.testMode = true;
-            showTestModeIndicator();
-        }
     }
 }
 
@@ -1644,6 +1637,31 @@ async function analyzeTokens(content) {
     }
 }
 
+// Helper function to start processing animation
+function startProcessingAnimation() {
+    // Initialize progress bar animation
+    if (elements.progressBar) {
+        elements.progressBar.style.width = '0%';
+        elements.progressBar.classList.add('animate-progress');
+        
+        // Animate the progress bar to 90% (reserve last 10% for completion)
+        setTimeout(() => {
+            elements.progressBar.style.width = '90%';
+        }, 100);
+    }
+    
+    // Show processing status
+    if (elements.processingStatus) {
+        elements.processingStatus.classList.remove('hidden');
+        elements.processingStatus.classList.remove('processing-complete');
+    }
+    
+    // Update processing text
+    setProcessingText('Processing with Claude...');
+    
+    console.log('Processing animation started');
+}
+
 // Helper function to fully stop processing animation
 function stopProcessingAnimation() {
     // Stop progress bar animation
@@ -1833,10 +1851,10 @@ function showNotification(message, type = 'info') {
 function toggleTestMode() {
     state.testMode = elements.testModeToggle.checked;
     
-    // Save test mode state to localStorage
+    // Save test mode preference to localStorage
     localStorage.setItem('test_mode', state.testMode);
     
-    // Show or hide test mode indicator
+    // Update UI to reflect test mode state
     if (state.testMode) {
         showTestModeIndicator();
     } else {
@@ -1846,31 +1864,46 @@ function toggleTestMode() {
     console.log(`Test mode ${state.testMode ? 'enabled' : 'disabled'}`);
 }
 
-// Show test mode indicator near the generate button
 function showTestModeIndicator() {
     // Create indicator if it doesn't exist
     if (!elements.testModeIndicator) {
         const indicator = document.createElement('span');
         indicator.id = 'test-mode-indicator';
         indicator.className = 'test-mode-active ml-2';
-        indicator.innerHTML = '<i class="fas fa-vial"></i> Test Mode';
+        indicator.textContent = 'Test Mode';
         
-        // Insert after generate button
-        if (elements.generateBtn && elements.generateBtn.parentNode) {
-            elements.generateBtn.parentNode.insertBefore(indicator, elements.generateBtn.nextSibling);
-            elements.testModeIndicator = indicator;
-        }
+        // Add indicator next to the generate button
+        elements.generateBtn.parentNode.insertBefore(indicator, elements.generateBtn.nextSibling);
+        elements.testModeIndicator = indicator;
+        
     } else if (elements.testModeIndicator) {
         elements.testModeIndicator.classList.remove('hidden');
     }
 }
 
-// Hide test mode indicator
 function hideTestModeIndicator() {
     if (elements.testModeIndicator) {
         elements.testModeIndicator.classList.add('hidden');
     }
 }
+
+// Initialize test mode from localStorage on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Set up event listeners for all UI elements
+    setupEventListeners();
+    
+    // Initialize test mode from localStorage
+    if (elements.testModeToggle) {
+        const savedTestMode = localStorage.getItem('test_mode') === 'true';
+        if (savedTestMode) {
+            elements.testModeToggle.checked = true;
+            state.testMode = true;
+            showTestModeIndicator();
+        }
+    }
+    
+    // Other initialization code...
+});
 
 // Initialize the app
 document.addEventListener('DOMContentLoaded', init); 
