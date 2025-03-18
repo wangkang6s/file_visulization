@@ -9,6 +9,8 @@
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.15.0"
+  },
   "devDependencies": {}
 } 

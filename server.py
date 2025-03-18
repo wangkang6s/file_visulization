@@ -557,97 +557,148 @@ def process_stream():
         try:
             yield format_stream_event("stream_start", {"message": "Stream starting"})
             
-            # Use the Claude 3.7 specific implementation with beta parameter
-            with client.beta.messages.stream(
-                model="claude-3-7-sonnet-20250219",
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system=system_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": user_content
-                            }
-                        ]
-                    }
-                ],
-                thinking={
-                    "type": "enabled",
-                    "budget_tokens": thinking_budget
-                },
-                betas=[OUTPUT_128K_BETA],  # Using betas parameter instead of headers
-            ) as stream:
-                message_id = str(uuid.uuid4())
-                generated_text = ""
-                start_time = time.time()
-                
-                for chunk in stream:
-                    try:
-                        # Handle thinking updates
-                        if hasattr(chunk, "thinking") and chunk.thinking:
-                            thinking_data = {
-                                "type": "thinking_update",
-                                "chunk_id": message_id,
-                                "thinking": {
-                                    "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
-                                }
-                            }
-                            yield format_stream_event("content", thinking_data)
-                        
-                        # Handle content block deltas (the actual generated text)
-                        if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
-                            content_data = {
-                                "type": "content_block_delta",
-                                "chunk_id": message_id,
-                                "delta": {
-                                    "text": chunk.delta.text
-                                }
-                            }
-                            generated_text += chunk.delta.text
-                            yield format_stream_event("content", content_data)
-                    except (ConnectionError, BrokenPipeError) as e:
-                        app.logger.error(f"Client disconnected: {str(e)}")
-                        # Exit the generator if the client disconnects
-                        return
-                
-                # Send message complete event with usage statistics when available
+            # Add retry logic with exponential backoff
+            max_retries = 5
+            retry_count = 0
+            backoff_time = 1  # Start with 1 second
+            
+            while retry_count <= max_retries:
                 try:
-                    usage_data = None
-                    if hasattr(stream, "usage"):
-                        usage_data = {
-                            "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
-                            "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
-                            "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
-                        }
-                    else:
-                        # If usage is not available from stream, calculate manually
-                        system_prompt_tokens = len(system_prompt) // 3
-                        content_tokens = len(user_content) // 4
-                        output_tokens = len(generated_text) // 4
+                    # Use the Claude 3.7 specific implementation with beta parameter
+                    with client.beta.messages.stream(
+                        model="claude-3-7-sonnet-20250219",
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system=system_prompt,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": user_content
+                                    }
+                                ]
+                            }
+                        ],
+                        thinking={
+                            "type": "enabled",
+                            "budget_tokens": thinking_budget
+                        },
+                        betas=[OUTPUT_128K_BETA],  # Using betas parameter instead of headers
+                    ) as stream:
+                        message_id = str(uuid.uuid4())
+                        generated_text = ""
+                        start_time = time.time()
                         
-                        usage_data = {
-                            "input_tokens": system_prompt_tokens + content_tokens,
-                            "output_tokens": output_tokens,
-                            "thinking_tokens": thinking_budget,
-                            "time_elapsed": round(time.time() - start_time, 2),
-                            "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
-                        }
+                        for chunk in stream:
+                            try:
+                                # Handle thinking updates
+                                if hasattr(chunk, "thinking") and chunk.thinking:
+                                    thinking_data = {
+                                        "type": "thinking_update",
+                                        "chunk_id": message_id,
+                                        "thinking": {
+                                            "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                                        }
+                                    }
+                                    yield format_stream_event("content", thinking_data)
+                                
+                                # Handle content block deltas (the actual generated text)
+                                if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
+                                    content_data = {
+                                        "type": "content_block_delta",
+                                        "chunk_id": message_id,
+                                        "delta": {
+                                            "text": chunk.delta.text
+                                        }
+                                    }
+                                    generated_text += chunk.delta.text
+                                    yield format_stream_event("content", content_data)
+                            except (ConnectionError, BrokenPipeError) as e:
+                                app.logger.error(f"Client disconnected: {str(e)}")
+                                # Exit the generator if the client disconnects
+                                return
+                        
+                        # Stream completed successfully, break out of retry loop
+                        break
+                
+                except Exception as e:
+                    error_str = str(e)
+                    error_details = ""
                     
-                    complete_data = {
-                        "type": "message_complete",
-                        "message_id": message_id,
-                        "chunk_id": message_id,
-                        "usage": usage_data,
-                        "html": generated_text
-                    }
-                    yield format_stream_event("content", complete_data)
-                    yield format_stream_event("stream_end", {"message": "Stream complete"})
-                except (ConnectionError, BrokenPipeError) as e:
-                    app.logger.error(f"Client disconnected during completion: {str(e)}")
+                    # Check if it's an API error with a response
+                    if hasattr(e, 'response') and hasattr(e.response, 'json'):
+                        try:
+                            error_details = e.response.json()
+                            app.logger.error(f"API Error details: {error_details}")
+                            
+                            # Check specifically for overloaded error (529)
+                            if isinstance(error_details, dict) and error_details.get('code') == 529:
+                                if retry_count < max_retries:
+                                    retry_count += 1
+                                    wait_time = backoff_time
+                                    backoff_time *= 2  # Exponential backoff
+                                    
+                                    app.logger.warning(f"Anthropic API overloaded. Retry {retry_count}/{max_retries} after {wait_time}s")
+                                    yield format_stream_event("status", {
+                                        "type": "status", 
+                                        "message": f"Anthropic API temporarily overloaded. Retrying in {wait_time}s..."
+                                    })
+                                    
+                                    time.sleep(wait_time)
+                                    continue  # Try again
+                        except Exception as json_err:
+                            app.logger.error(f"Failed to parse error response: {str(json_err)}")
+                    
+                    # If we reach here, it's either not a 529 error or we've exhausted retries
+                    app.logger.error(f"Error in stream_generator: {error_str}")
+                    if error_details:
+                        app.logger.error(f"Error details: {error_details}")
+                    
+                    # Yield error and exit
+                    yield format_stream_event("error", {
+                        "type": "error",
+                        "error": error_str,
+                        "details": str(error_details)
+                    })
                     return
+            
+            # Send message complete event with usage statistics when available
+            try:
+                usage_data = None
+                if hasattr(stream, "usage"):
+                    usage_data = {
+                        "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
+                        "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
+                        "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                    }
+                else:
+                    # If usage is not available from stream, calculate manually
+                    system_prompt_tokens = len(system_prompt) // 3
+                    content_tokens = len(user_content) // 4
+                    output_tokens = len(generated_text) // 4
+                    
+                    usage_data = {
+                        "input_tokens": system_prompt_tokens + content_tokens,
+                        "output_tokens": output_tokens,
+                        "thinking_tokens": thinking_budget,
+                        "time_elapsed": round(time.time() - start_time, 2),
+                        "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
+                    }
+                
+                complete_data = {
+                    "type": "message_complete",
+                    "message_id": message_id,
+                    "chunk_id": message_id,
+                    "usage": usage_data,
+                    "html": generated_text
+                }
+                yield format_stream_event("content", complete_data)
+                yield format_stream_event("stream_end", {"message": "Stream complete"})
+            except (ConnectionError, BrokenPipeError) as e:
+                app.logger.error(f"Client disconnected during completion: {str(e)}")
+                return
         except Exception as e:
             # Log the exception
             app.logger.error(f"Error in stream_generator: {str(e)}")

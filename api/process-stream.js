@@ -35,6 +35,9 @@ module.exports = async (req, res) => {
     }
   }
   
+  // Function to wait
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  
   try {
     // Log the start of the request
     console.log('Process-stream request received');
@@ -114,41 +117,90 @@ module.exports = async (req, res) => {
         stream: streamOpts.stream
       }));
       
-      const stream = await anthropic.messages.create(streamOpts);
-      
-      console.log('Stream created, processing chunks...');
+      // Add retry logic with exponential backoff
+      let maxRetries = 5;
+      let retryCount = 0;
+      let backoffTime = 1000; // Start with 1 second (in ms)
+      let success = false;
       let htmlOutput = '';
       let chunkCount = 0;
+      let stream;
       
-      // Process chunks
-      for await (const chunk of stream) {
-        chunkCount++;
-        
-        if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
-          const textChunk = chunk.delta.text;
-          htmlOutput += textChunk;
+      while (retryCount <= maxRetries && !success) {
+        try {
+          console.log(`Attempt ${retryCount + 1}/${maxRetries + 1} to create stream`);
+          stream = await anthropic.messages.create(streamOpts);
           
-          // Send chunk in delta format
-          writeEvent('delta', { type: 'delta', content: escape(textChunk) });
+          console.log('Stream created, processing chunks...');
           
-          // Log every 10th chunk
-          if (chunkCount % 10 === 0) {
-            console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
+          // Process chunks
+          for await (const chunk of stream) {
+            chunkCount++;
+            
+            if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
+              const textChunk = chunk.delta.text;
+              htmlOutput += textChunk;
+              
+              // Send chunk in delta format
+              writeEvent('delta', { type: 'delta', content: escape(textChunk) });
+              
+              // Log every 10th chunk
+              if (chunkCount % 10 === 0) {
+                console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
+              }
+            }
+            // Handle thinking updates if available
+            else if (chunk.type === 'thinking') {
+              console.log('Received thinking update');
+              writeEvent('thinking_update', { 
+                type: 'thinking_update', 
+                thinking: { 
+                  content: escape(chunk.thinking ? chunk.thinking.content : '') 
+                } 
+              });
+            }
+          }
+          
+          // If we get here, streaming completed successfully
+          success = true;
+          console.log(`Stream completed with ${chunkCount} total chunks`);
+          
+        } catch (error) {
+          console.error(`Error in attempt ${retryCount + 1}:`, error);
+          
+          // Check if it's an overloaded error (529)
+          const isOverloaded = error.status === 529 || 
+                               (error.response && error.response.status === 529) ||
+                               (error.message && error.message.includes('529'));
+          
+          if (isOverloaded && retryCount < maxRetries) {
+            retryCount++;
+            const waitTime = backoffTime / 1000; // Convert to seconds for display
+            
+            console.log(`Anthropic API overloaded. Retry ${retryCount}/${maxRetries} after ${waitTime}s`);
+            
+            // Send status update to client
+            writeEvent('status', { 
+              type: 'status', 
+              message: `Anthropic API temporarily overloaded. Retrying in ${waitTime}s...`
+            });
+            
+            await sleep(backoffTime);
+            backoffTime *= 2; // Exponential backoff
+            continue; // Try again
+          } else {
+            // Other error or we've exhausted retries
+            writeEvent('error', { 
+              type: 'error', 
+              error: escape(error.message || 'Unknown error'),
+              details: JSON.stringify(error)
+            });
+            console.error('Error details:', error);
+            res.end();
+            return;
           }
         }
-        // Handle thinking updates if available
-        else if (chunk.type === 'thinking') {
-          console.log('Received thinking update');
-          writeEvent('thinking_update', { 
-            type: 'thinking_update', 
-            thinking: { 
-              content: escape(chunk.thinking ? chunk.thinking.content : '') 
-            } 
-          });
-        }
       }
-      
-      console.log(`Stream completed with ${chunkCount} total chunks`);
       
       // Calculate token usage
       const systemPromptTokens = Math.floor(systemPrompt.length / 3);

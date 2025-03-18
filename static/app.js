@@ -71,7 +71,9 @@ const elements = {
     openPreview: $('#open-preview'),
     
     // Token Info
-    tokenInfo: $('#tokenInfo')
+    tokenInfo: $('#tokenInfo'),
+    thinkingOutput: $('#thinking-output'),
+    statusMessage: $('#status-message')
 };
 
 // State
@@ -1255,38 +1257,61 @@ async function processWithStreaming(data) {
 }
 
 function handleStreamEvent(event) {
+    // Ensure the event has a type property
+    if (!event || !event.type) {
+        console.error('Received event without type:', event);
+        return;
+    }
+    
+    console.log(`Received ${event.type} event:`, event);
+    
+    // Process events based on their type
     switch (event.type) {
         case 'start':
-            console.log('Generation started:', event.message_id);
+            console.log('Generation started:', event.message);
             break;
             
-        case 'chunk':
-            // Accumulate HTML content
-            state.generatedHtml += event.content;
-            
-            // Update code display as we go
+        case 'delta':
+            // Append delta content to the generated HTML
+            state.generatedHtml += event.content || '';
             updateHtmlDisplay();
+            break;
             
-            // Update progress bar to indicate activity
-            if (elements.progressBar) {
-                // Increment the progress bar in small steps while receiving chunks
-                const currentWidth = elements.progressBar.style.width || '0%';
-                const currentPercent = parseInt(currentWidth) || 0;
-                
-                // Cap at 90% during chunks to reserve the final 10% for completion
-                if (currentPercent < 90) {
-                    elements.progressBar.style.width = `${Math.min(currentPercent + 1, 90)}%`;
-                }
+        case 'thinking_update':
+            if (event.thinking && event.thinking.content) {
+                elements.thinkingOutput.textContent = event.thinking.content;
+                elements.thinkingOutput.classList.remove('hidden');
             }
             break;
             
-        case 'info':
-            // Display informational messages (like retry notifications)
-            console.log('Info message:', event.message);
-            showToast(event.message, 'info');
+        case 'status':
+            // Handle status updates (like retry notifications)
+            console.log('Status update:', event.message);
+            // Update the status message in the UI
+            if (elements.statusMessage) {
+                elements.statusMessage.textContent = event.message;
+                elements.statusMessage.classList.remove('hidden');
+            } else {
+                // If no dedicated status element exists, show a toast notification
+                showToast(event.message, 'info');
+            }
             break;
             
-        case 'complete':
+        case 'error':
+            console.error('Generation error:', event.error);
+            showToast(`Error: ${event.error}`, 'error');
+            
+            // Show detailed error if available
+            if (event.details) {
+                console.error('Error details:', event.details);
+            }
+            
+            // Stop processing animation on error
+            stopProcessingAnimation();
+            resetGenerationUI();
+            break;
+            
+        case 'message_complete':
             console.log('Generation complete:', event.usage);
             
             // Ensure processing animation stops completely
@@ -1348,15 +1373,6 @@ function handleStreamEvent(event) {
             
             // Show completed message
             showToast('Visualization complete!', 'success');
-            break;
-            
-        case 'error':
-            console.error('Generation error:', event.message);
-            showToast(`Error: ${event.message}`, 'error');
-            
-            // Stop processing animation on error
-            stopProcessingAnimation();
-            resetGenerationUI();
             break;
             
         case 'deployment_note':
