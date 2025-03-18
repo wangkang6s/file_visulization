@@ -90,16 +90,16 @@ module.exports = async (req, res) => {
     try {
       console.log('Importing Anthropic...');
       // Import Anthropic dynamically
-      const Anthropic = await import('anthropic');
+      const { Anthropic } = await import('@anthropic-ai/sdk');
       console.log('Creating Anthropic client...');
-      const anthropic = new Anthropic.Anthropic({
+      const anthropic = new Anthropic({
         apiKey: apiKey
       });
       
       console.log('Creating message with streaming...');
       // Create message with streaming
       const streamOpts = {
-        model: 'claude-3-7-sonnet-20240307',
+        model: 'claude-3-5-sonnet-20240620',
         max_tokens: maxTokens,
         temperature: temperature,
         system: systemPrompt,
@@ -114,14 +114,14 @@ module.exports = async (req, res) => {
         stream: streamOpts.stream
       }));
       
-      const message = await anthropic.messages.create(streamOpts);
+      const stream = await anthropic.messages.create(streamOpts);
       
       console.log('Stream created, processing chunks...');
       let htmlOutput = '';
       let chunkCount = 0;
       
       // Process chunks
-      for await (const chunk of message) {
+      for await (const chunk of stream) {
         chunkCount++;
         
         if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
@@ -136,7 +136,7 @@ module.exports = async (req, res) => {
             console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
           }
         }
-        // Handle thinking updates
+        // Handle thinking updates if available
         else if (chunk.type === 'thinking') {
           console.log('Received thinking update');
           writeEvent('thinking_update', { 
@@ -165,7 +165,8 @@ module.exports = async (req, res) => {
         usage: {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
-          thinking_tokens: thinkingBudget
+          thinking_tokens: thinkingBudget,
+          total_cost: ((inputTokens + outputTokens) / 1000000 * 3.0)
         },
         html: escape(htmlOutput)
       });

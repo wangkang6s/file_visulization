@@ -124,7 +124,30 @@ function init() {
     // Initialize state
     if (elements.fileTab) elements.fileTab.click(); // Default to file tab
     
+    // Load and display usage statistics
+    loadUsageStatistics();
+    
     console.log("App initialized");
+}
+
+function loadUsageStatistics() {
+    try {
+        // Get stored statistics or initialize with zeros
+        const stats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+        
+        // Update UI elements if they exist
+        if (document.getElementById('total-runs')) {
+            document.getElementById('total-runs').textContent = stats.totalRuns.toLocaleString();
+        }
+        if (document.getElementById('total-tokens')) {
+            document.getElementById('total-tokens').textContent = stats.totalTokens.toLocaleString();
+        }
+        if (document.getElementById('total-cost')) {
+            document.getElementById('total-cost').textContent = `$${stats.totalCost.toFixed(4)}`;
+        }
+    } catch (e) {
+        console.error('Error loading usage statistics:', e);
+    }
 }
 
 // Event listeners
@@ -1023,30 +1046,44 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                 if (data.type === 'message_complete') {
                                     console.log('Message complete received');
                                     
-                                    // Update usage stats if available
+                                    // Update usage statistics
                                     if (data.usage) {
-                                        // Store these values in variables to ensure proper calculation
-                                        const inputTokens = parseInt(data.usage.input_tokens || 0);
-                                        const outputTokens = parseInt(data.usage.output_tokens || 0);
-                                        const thinkingTokens = parseInt(data.usage.thinking_tokens || 0);
+                                        elements.inputTokens.textContent = data.usage.input_tokens.toLocaleString();
+                                        elements.outputTokens.textContent = data.usage.output_tokens.toLocaleString();
+                                        elements.thinkingTokens.textContent = data.usage.thinking_tokens.toLocaleString();
                                         
-                                        // Update the display elements
-                                        elements.inputTokens.textContent = inputTokens.toLocaleString() || '-';
-                                        elements.outputTokens.textContent = outputTokens.toLocaleString() || '-';
-                                        elements.thinkingTokens.textContent = thinkingTokens.toLocaleString() || '-';
+                                        // Make sure total_cost is available or calculate it
+                                        const totalCost = data.usage.total_cost || 
+                                            ((data.usage.input_tokens + data.usage.output_tokens) / 1000000 * 3.0);
+                                        elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
                                         
-                                        // Calculate cost using accurate rates
-                                        // $3 per million tokens for input and thinking tokens
-                                        // $15 per million tokens for output tokens
-                                        const inputCost = inputTokens / 1000000 * 3;
-                                        const outputCost = outputTokens / 1000000 * 15;
-                                        const thinkingCost = thinkingTokens / 1000000 * 3;
-                                        const totalCost = inputCost + outputCost + thinkingCost;
-                                        
-                                        console.log(`Cost calculation: Input($${inputCost.toFixed(6)}) + Output($${outputCost.toFixed(6)}) + Thinking($${thinkingCost.toFixed(6)}) = $${totalCost.toFixed(6)}`);
-                                        
-                                        // Update the total cost display
-                                        elements.totalCost.textContent = `$${totalCost.toFixed(6)}`;
+                                        // Update storage with new usage stats
+                                        try {
+                                            // Get existing stats
+                                            const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                                            
+                                            // Update stats
+                                            existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                                            existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                                                (data.usage.input_tokens + data.usage.output_tokens);
+                                            existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
+                                            
+                                            // Save updated stats
+                                            localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                                            
+                                            // Update UI if stats container exists
+                                            if (document.getElementById('total-runs')) {
+                                                document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                                            }
+                                            if (document.getElementById('total-tokens')) {
+                                                document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                                            }
+                                            if (document.getElementById('total-cost')) {
+                                                document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                                            }
+                                        } catch (e) {
+                                            console.error('Error updating usage statistics:', e);
+                                        }
                                     }
                                 }
                                 
@@ -1265,7 +1302,39 @@ function handleStreamEvent(event) {
                 elements.inputTokens.textContent = event.usage.input_tokens.toLocaleString();
                 elements.outputTokens.textContent = event.usage.output_tokens.toLocaleString();
                 elements.thinkingTokens.textContent = event.usage.thinking_tokens.toLocaleString();
-                elements.totalCost.textContent = `$${event.usage.total_cost.toFixed(4)}`;
+                
+                // Make sure total_cost is available or calculate it
+                const totalCost = event.usage.total_cost || 
+                    ((event.usage.input_tokens + event.usage.output_tokens) / 1000000 * 3.0);
+                elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                
+                // Update storage with new usage stats
+                try {
+                    // Get existing stats
+                    const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                    
+                    // Update stats
+                    existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                    existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                        (event.usage.input_tokens + event.usage.output_tokens);
+                    existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
+                    
+                    // Save updated stats
+                    localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                    
+                    // Update UI if stats container exists
+                    if (document.getElementById('total-runs')) {
+                        document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                    }
+                    if (document.getElementById('total-tokens')) {
+                        document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                    }
+                    if (document.getElementById('total-cost')) {
+                        document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                    }
+                } catch (e) {
+                    console.error('Error updating usage statistics:', e);
+                }
             }
             
             // Finalize HTML display

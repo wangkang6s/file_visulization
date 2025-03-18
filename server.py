@@ -582,6 +582,7 @@ def process_stream():
             ) as stream:
                 message_id = str(uuid.uuid4())
                 generated_text = ""
+                start_time = time.time()
                 
                 for chunk in stream:
                     try:
@@ -620,6 +621,19 @@ def process_stream():
                             "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
                             "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
                             "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                        }
+                    else:
+                        # If usage is not available from stream, calculate manually
+                        system_prompt_tokens = len(system_prompt) // 3
+                        content_tokens = len(user_content) // 4
+                        output_tokens = len(generated_text) // 4
+                        
+                        usage_data = {
+                            "input_tokens": system_prompt_tokens + content_tokens,
+                            "output_tokens": output_tokens,
+                            "thinking_tokens": thinking_budget,
+                            "time_elapsed": round(time.time() - start_time, 2),
+                            "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
                         }
                     
                     complete_data = {
