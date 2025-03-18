@@ -1,4 +1,4 @@
-// Test generate function for Vercel that doesn't use Anthropic API
+// Test generate function for Vercel that uses minimal Anthropic API tokens
 module.exports = async (req, res) => {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -22,98 +22,90 @@ module.exports = async (req, res) => {
     // Get content from request body
     const body = req.body || {};
     const content = body.content || body.source || '';
+    const apiKey = body.api_key || '';
+    
+    if (!content) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Content is required' 
+      });
+    }
+    
+    if (!apiKey || !apiKey.startsWith('sk-ant')) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Valid API key is required' 
+      });
+    }
     
     console.log(`Got request with content length: ${content.length}`);
     
-    // Add a small delay to simulate processing
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Truncate content to just 500 characters to minimize token usage
+    const truncatedContent = content.length > 500 ? content.substring(0, 500) + '...' : content;
     
-    // Create a simple mock HTML
-    const mockHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Test HTML Generator (Vercel)</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-</head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
-    <div class="container mx-auto px-4 py-8">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold mb-2">Test HTML Generation (Vercel)</h1>
-            <p class="text-gray-600 dark:text-gray-400">This is a test HTML template that doesn't use Anthropic API tokens.</p>
-            
-            <!-- Dark/Light Mode Toggle -->
-            <button id="theme-toggle" class="mt-4 p-2 bg-primary-600 text-white rounded">
-                <i class="fas fa-moon dark:hidden"></i>
-                <i class="fas fa-sun hidden dark:inline"></i>
-                <span class="ml-2">Toggle Theme</span>
-            </button>
-        </header>
-        
-        <main>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 mb-6 animate-fade-in">
-                <h2 class="text-2xl font-bold mb-4">Your Content</h2>
-                <div class="prose dark:prose-invert max-w-none">
-                    <pre class="bg-gray-100 dark:bg-gray-700 p-4 rounded overflow-auto">${content.substring(0, 1000)}... (truncated)</pre>
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
-                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-info-circle text-primary-500 mr-2"></i>Test Info</h3>
-                    <p>This is a test template to save Anthropic API tokens during development on Vercel.</p>
-                </div>
-                
-                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
-                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-chart-line text-primary-500 mr-2"></i>Mock Statistics</h3>
-                    <ul class="space-y-2">
-                        <li>Content Length: ${content.length} characters</li>
-                        <li>Estimated Tokens: ${Math.floor(content.length / 4)}</li>
-                    </ul>
-                </div>
-            </div>
-        </main>
-        
-        <footer class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700 text-center text-gray-600 dark:text-gray-400">
-            <p>File Visualizer Test Mode (Vercel)</p>
-        </footer>
-    </div>
+    // Start time for measuring elapsed time
+    const startTime = Date.now();
     
-    <script>
-        // Simple theme toggle
-        document.getElementById('theme-toggle').addEventListener('click', function() {
-            document.documentElement.classList.toggle('dark');
-        });
-        
-        // Check for system preference
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            document.documentElement.classList.add('dark');
-        }
-    </script>
-</body>
-</html>`;
-    
-    // Calculate mock token usage statistics
-    const systemPromptTokens = 1000; // Mock value
-    const contentTokens = Math.floor(content.length / 4);
-    const outputTokens = Math.floor(mockHtml.length / 4);
-    const thinkingTokens = 1000; // Mock value
-    
-    // Return JSON response with HTML and usage stats
-    return res.status(200).json({
-      success: true,
-      html: mockHtml,
-      usage: {
-        input_tokens: systemPromptTokens + contentTokens,
-        output_tokens: outputTokens,
-        thinking_tokens: thinkingTokens,
-        time_elapsed: 1.5, // Mock elapsed time
-        total_cost: ((systemPromptTokens + contentTokens + outputTokens) / 1000000 * 3.0)
-      },
-      test_mode: true
-    });
+    try {
+      // Import Anthropic SDK
+      const { Anthropic } = await import('@anthropic-ai/sdk');
+      const anthropic = new Anthropic({
+        apiKey: apiKey
+      });
+      
+      // Brief system prompt to minimize token usage
+      const systemPrompt = "Generate minimal HTML to confirm the API integration works.";
+      
+      // Minimal user prompt
+      const userPrompt = `Generate a very simple HTML page that confirms the API works. The content is: ${truncatedContent}`;
+      
+      // Call Anthropic API with minimal settings
+      const response = await anthropic.messages.create({
+        model: "claude-3-haiku-20240307", // Use smaller model to save tokens
+        max_tokens: 100, // Minimal output
+        temperature: 0.5,
+        system: systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: userPrompt
+          }
+        ]
+      });
+      
+      // Get the response content
+      const htmlOutput = response.content[0].text;
+      
+      // Calculate elapsed time
+      const elapsedTime = (Date.now() - startTime) / 1000; // Convert to seconds
+      
+      // Calculate token usage (estimates)
+      const systemPromptTokens = Math.floor(systemPrompt.length / 3);
+      const contentTokens = Math.floor(truncatedContent.length / 4);
+      const outputTokens = Math.floor(htmlOutput.length / 4);
+      
+      // Return JSON response with HTML and usage stats
+      return res.status(200).json({
+        success: true,
+        html: htmlOutput,
+        usage: {
+          input_tokens: systemPromptTokens + contentTokens,
+          output_tokens: outputTokens,
+          thinking_tokens: 0, // No thinking tokens used in this simplified test
+          time_elapsed: elapsedTime,
+          total_cost: ((systemPromptTokens + contentTokens + outputTokens) / 1000000 * 3.0)
+        },
+        test_mode: true,
+        message: "Test completed with minimal token usage"
+      });
+      
+    } catch (apiError) {
+      console.error('Error calling Anthropic API:', apiError);
+      return res.status(500).json({
+        success: false,
+        error: `Error calling Anthropic API: ${apiError.message}`
+      });
+    }
     
   } catch (error) {
     console.error('Error in test generation:', error);

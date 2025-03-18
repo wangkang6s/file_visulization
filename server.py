@@ -749,106 +749,92 @@ def test_api():
 @app.route('/api/test-generate', methods=['POST'])
 def test_generate():
     """
-    Test endpoint that returns mock HTML without using Anthropic API to save tokens during testing
+    Test endpoint that uses minimal Anthropic API tokens to test functionality
     """
     try:
         # Get data from request
         data = request.get_json()
         content = data.get('content', '') or data.get('source', '')
+        api_key = data.get('api_key')
         
-        # Create a simple mock HTML based on the content
-        mock_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Test HTML Generator</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-</head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
-    <div class="container mx-auto px-4 py-8">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold mb-2">Test HTML Generation</h1>
-            <p class="text-gray-600 dark:text-gray-400">This is a test HTML template that doesn't use Anthropic API tokens.</p>
+        if not api_key:
+            return jsonify({"success": False, "error": "API key is required"}), 400
             
-            <!-- Dark/Light Mode Toggle -->
-            <button id="theme-toggle" class="mt-4 p-2 bg-primary-600 text-white rounded">
-                <i class="fas fa-moon dark:hidden"></i>
-                <i class="fas fa-sun hidden dark:inline"></i>
-                <span class="ml-2">Toggle Theme</span>
-            </button>
-        </header>
+        if not content:
+            return jsonify({"success": False, "error": "Content is required"}), 400
         
-        <main>
-            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 mb-6 animate-fade-in">
-                <h2 class="text-2xl font-bold mb-4">Your Content</h2>
-                <div class="prose dark:prose-invert max-w-none">
-                    <pre class="bg-gray-100 dark:bg-gray-700 p-4 rounded overflow-auto">{content[:1000]}... (truncated)</pre>
-                </div>
-            </div>
+        # Truncate content to just 500 characters to minimize token usage
+        truncated_content = content[:500] + "..." if len(content) > 500 else content
+        
+        # Create Anthropic client
+        client = None
+        try:
+            client = create_anthropic_client(api_key)
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"API key validation failed: {str(e)}"
+            })
+        
+        # Brief system prompt to minimize token usage
+        system_prompt = "Generate minimal HTML to confirm the API integration works."
+        
+        # Minimal user prompt
+        user_content = f"Generate a very simple HTML page that confirms the API works. The content is: {truncated_content}"
+        
+        # Record start time
+        start_time = time.time()
+        
+        try:
+            # Call Anthropic API with minimal settings
+            response = client.messages.create(
+                model="claude-3-haiku-20240307",  # Use smaller model to save tokens
+                max_tokens=100,  # Minimal output
+                temperature=0.5,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": user_content
+                    }
+                ]
+            )
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
-                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-info-circle text-primary-500 mr-2"></i>Test Info</h3>
-                    <p>This is a test template to save Anthropic API tokens during development.</p>
-                </div>
-                
-                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
-                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-chart-line text-primary-500 mr-2"></i>Mock Statistics</h3>
-                    <ul class="space-y-2">
-                        <li>Content Length: {len(content)} characters</li>
-                        <li>Estimated Tokens: {len(content) // 4}</li>
-                    </ul>
-                </div>
-            </div>
-        </main>
-        
-        <footer class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700 text-center text-gray-600 dark:text-gray-400">
-            <p>File Visualizer Test Mode</p>
-        </footer>
-    </div>
-    
-    <script>
-        // Simple theme toggle
-        document.getElementById('theme-toggle').addEventListener('click', function() {{
-            document.documentElement.classList.toggle('dark');
-        }});
-        
-        // Check for system preference
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {{
-            document.documentElement.classList.add('dark');
-        }}
-    </script>
-</body>
-</html>"""
-        
-        # Simulate some processing time to make it feel realistic
-        time.sleep(1)
-        
-        # Calculate mock token usage for statistics (close to what would be used)
-        system_prompt_tokens = 1000  # Mock value
-        content_tokens = len(content) // 4
-        output_tokens = len(mock_html) // 4
-        thinking_tokens = 1000  # Mock value
-        
-        # Return response with HTML and mock usage statistics
-        return jsonify({
-            'success': True,
-            'html': mock_html,
-            'usage': {
-                'input_tokens': system_prompt_tokens + content_tokens,
-                'output_tokens': output_tokens,
-                'thinking_tokens': thinking_tokens,
-                'time_elapsed': 1.5,  # Mock time elapsed
-                'total_cost': ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
-            },
-            'test_mode': True
-        })
+            # Get the response content
+            html_output = response.content[0].text
+            
+            # Calculate token usage (estimates)
+            system_prompt_tokens = len(system_prompt) // 3
+            content_tokens = len(truncated_content) // 4
+            output_tokens = len(html_output) // 4
+            
+            # Calculate elapsed time
+            elapsed_time = time.time() - start_time
+            
+            # Return response with HTML and token usage statistics
+            return jsonify({
+                "success": True,
+                "html": html_output,
+                "usage": {
+                    "input_tokens": system_prompt_tokens + content_tokens,
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": 0,  # No thinking tokens used in this simplified test
+                    "time_elapsed": elapsed_time,
+                    "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
+                },
+                "test_mode": True,
+                "message": "Test completed with minimal token usage"
+            })
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Error calling Anthropic API: {str(e)}"
+            }), 500
+            
     except Exception as e:
         return jsonify({
-            'success': False,
-            'error': f"Error in test generation: {str(e)}"
+            "success": False, 
+            "error": f"Error in test generation: {str(e)}"
         }), 500
 
 if __name__ == "__main__":

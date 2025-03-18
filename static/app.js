@@ -37,13 +37,17 @@ const elements = {
     // Model Parameters
     temperature: $('#temperature'),
     temperatureValue: $('#temperature-value'),
-    temperatureReset: $('#temperature-reset'),
+    temperatureReset: $('#reset-temp'),
     maxTokens: $('#max-tokens'),
     maxTokensValue: $('#max-tokens-value'),
-    maxTokensReset: $('#max-tokens-reset'),
+    maxTokensReset: $('#reset-max-tokens'),
     thinkingBudget: $('#thinking-budget'),
     thinkingBudgetValue: $('#thinking-budget-value'),
-    thinkingBudgetReset: $('#thinking-budget-reset'),
+    thinkingBudgetReset: $('#reset-thinking-budget'),
+    
+    // Test Mode
+    testModeToggle: $('#test-mode'),
+    testModeIndicator: $('#test-mode-indicator'),
     
     // Generate
     generateBtn: $('#generate-btn'),
@@ -74,10 +78,6 @@ const elements = {
     tokenInfo: $('#tokenInfo'),
     thinkingOutput: $('#thinking-output'),
     statusMessage: $('#status-message'),
-    
-    // Test mode
-    testModeToggle: $('#test-mode'),
-    testModeIndicator: $('#test-mode-indicator')
 };
 
 // State
@@ -250,6 +250,13 @@ function setupEventListeners() {
     // Add event listener for test mode toggle
     if (elements.testModeToggle) {
         elements.testModeToggle.addEventListener('change', toggleTestMode);
+        // Initialize test mode state from localStorage
+        const savedTestMode = localStorage.getItem('test_mode') === 'true';
+        if (savedTestMode) {
+            elements.testModeToggle.checked = true;
+            state.testMode = true;
+            showTestModeIndicator();
+        }
     }
 }
 
@@ -1825,6 +1832,9 @@ function showNotification(message, type = 'info') {
 // Toggle test mode state
 function toggleTestMode() {
     state.testMode = elements.testModeToggle.checked;
+    
+    // Save test mode state to localStorage
+    localStorage.setItem('test_mode', state.testMode);
     
     // Show or hide test mode indicator
     if (state.testMode) {
