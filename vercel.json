@@ -26,6 +26,10 @@
       "source": "/api/test-vercel",
       "destination": "/api/test-vercel.js"
     },
+    {
+      "source": "/api/test-generate",
+      "destination": "/api/test-generate.js"
+    },
     { 
       "source": "/api/(.*)",
       "destination": "/api" 
@@ -75,6 +79,10 @@
     "api/test-vercel.js": {
       "memory": 128,
       "maxDuration": 5
+    },
+    "api/test-generate.js": {
+      "memory": 512,
+      "maxDuration": 10
     }
   },
   "build": {

@@ -746,6 +746,111 @@ def test_api():
             "timestamp": time.time()
         })
 
+@app.route('/api/test-generate', methods=['POST'])
+def test_generate():
+    """
+    Test endpoint that returns mock HTML without using Anthropic API to save tokens during testing
+    """
+    try:
+        # Get data from request
+        data = request.get_json()
+        content = data.get('content', '') or data.get('source', '')
+        
+        # Create a simple mock HTML based on the content
+        mock_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test HTML Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold mb-2">Test HTML Generation</h1>
+            <p class="text-gray-600 dark:text-gray-400">This is a test HTML template that doesn't use Anthropic API tokens.</p>
+            
+            <!-- Dark/Light Mode Toggle -->
+            <button id="theme-toggle" class="mt-4 p-2 bg-primary-600 text-white rounded">
+                <i class="fas fa-moon dark:hidden"></i>
+                <i class="fas fa-sun hidden dark:inline"></i>
+                <span class="ml-2">Toggle Theme</span>
+            </button>
+        </header>
+        
+        <main>
+            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 mb-6 animate-fade-in">
+                <h2 class="text-2xl font-bold mb-4">Your Content</h2>
+                <div class="prose dark:prose-invert max-w-none">
+                    <pre class="bg-gray-100 dark:bg-gray-700 p-4 rounded overflow-auto">{content[:1000]}... (truncated)</pre>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
+                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-info-circle text-primary-500 mr-2"></i>Test Info</h3>
+                    <p>This is a test template to save Anthropic API tokens during development.</p>
+                </div>
+                
+                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 animate-fade-in">
+                    <h3 class="text-xl font-bold mb-3"><i class="fas fa-chart-line text-primary-500 mr-2"></i>Mock Statistics</h3>
+                    <ul class="space-y-2">
+                        <li>Content Length: {len(content)} characters</li>
+                        <li>Estimated Tokens: {len(content) // 4}</li>
+                    </ul>
+                </div>
+            </div>
+        </main>
+        
+        <footer class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700 text-center text-gray-600 dark:text-gray-400">
+            <p>File Visualizer Test Mode</p>
+        </footer>
+    </div>
+    
+    <script>
+        // Simple theme toggle
+        document.getElementById('theme-toggle').addEventListener('click', function() {{
+            document.documentElement.classList.toggle('dark');
+        }});
+        
+        // Check for system preference
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {{
+            document.documentElement.classList.add('dark');
+        }}
+    </script>
+</body>
+</html>"""
+        
+        # Simulate some processing time to make it feel realistic
+        time.sleep(1)
+        
+        # Calculate mock token usage for statistics (close to what would be used)
+        system_prompt_tokens = 1000  # Mock value
+        content_tokens = len(content) // 4
+        output_tokens = len(mock_html) // 4
+        thinking_tokens = 1000  # Mock value
+        
+        # Return response with HTML and mock usage statistics
+        return jsonify({
+            'success': True,
+            'html': mock_html,
+            'usage': {
+                'input_tokens': system_prompt_tokens + content_tokens,
+                'output_tokens': output_tokens,
+                'thinking_tokens': thinking_tokens,
+                'time_elapsed': 1.5,  # Mock time elapsed
+                'total_cost': ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
+            },
+            'test_mode': True
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f"Error in test generation: {str(e)}"
+        }), 500
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the Claude 3.7 File Visualizer server')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5009)),

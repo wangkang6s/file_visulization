@@ -73,7 +73,11 @@ const elements = {
     // Token Info
     tokenInfo: $('#tokenInfo'),
     thinkingOutput: $('#thinking-output'),
-    statusMessage: $('#status-message')
+    statusMessage: $('#status-message'),
+    
+    // Test mode
+    testModeToggle: $('#test-mode'),
+    testModeIndicator: $('#test-mode-indicator')
 };
 
 // State
@@ -91,7 +95,8 @@ let state = {
     generatedHtml: '',
     fileName: '',
     startTime: null,
-    elapsedTimeInterval: null
+    elapsedTimeInterval: null,
+    testMode: false
 };
 
 // Function to update processing text
@@ -240,6 +245,11 @@ function setupEventListeners() {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIOS) {
         document.body.classList.add('ios-device');
+    }
+    
+    // Add event listener for test mode toggle
+    if (elements.testModeToggle) {
+        elements.testModeToggle.addEventListener('change', toggleTestMode);
     }
 }
 
@@ -785,117 +795,147 @@ function updateGenerateButtonState() {
 
 // Generation Process
 async function startGeneration() {
-    console.log("START GENERATION FUNCTION CALLED", new Date().toISOString());
-    
-    if (state.processing) {
-        console.log("Already processing, returning");
-        return;
-    }
-
-    // Validate API key
-    const apiKey = elements.apiKeyInput.value.trim();
-    if (!apiKey) {
-        showNotification("Please enter an API key", "error");
-        return;
-    }
-
-    // Validate API key with server
     try {
-        const validationResponse = await fetch(`${API_URL}/api/validate-key`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ api_key: apiKey })
-        });
+        // Get current values
+        const apiKey = elements.apiKeyInput.value.trim();
+        const content = getInputContent();
+        const formatPrompt = elements.additionalPrompt ? elements.additionalPrompt.value.trim() : '';
+        const temperature = parseFloat(elements.temperature.value);
+        const maxTokens = parseInt(elements.maxTokens.value);
+        const thinkingBudget = parseInt(elements.thinkingBudget.value);
         
-        const validationData = await validationResponse.json();
-        if (!validationResponse.ok || !validationData.valid) {
-            showNotification(validationData.message || "Invalid API key", "error");
+        // Validation
+        if (!apiKey) {
+            showToast('Please enter your Anthropic API key', 'error');
             return;
         }
-    } catch (error) {
-        console.error("Error validating API key:", error);
-        showNotification("Error validating API key: " + error.message, "error");
-        return;
-    }
-
-    // Get input content
-    const inputContent = getInputContent();
-    if (!inputContent) {
-        showNotification("Please provide input content", "error");
-        return;
-    }
-
-    console.log("All validations passed, proceeding with generation");
-
-    // Update UI to show processing state
-    state.processing = true;
-    state.startTime = new Date();  // Initialize start time
-    
-    // Show processing status
-    if (elements.processingStatus) {
-        elements.processingStatus.classList.remove('hidden');
-    }
-    
-    // Use the in-page processing status instead of the full screen overlay
-    // const processingContainer = document.getElementById('processingContainer');
-    // if (processingContainer) {
-    //     processingContainer.style.display = 'flex';
-    // }
-    
-    // Set initial processing text
-    if (elements.processingText) {
-        elements.processingText.textContent = "Preparing to generate...";
-    }
-    
-    if (elements.processingIcon) {
-        elements.processingIcon.classList.remove("fa-check-circle");
-        elements.processingIcon.classList.add("fa-spinner", "fa-spin");
-        elements.processingIcon.style.color = ""; // Reset color
-    }
-    if (elements.elapsedTime) {
-        elements.elapsedTime.textContent = 'Elapsed: 0:00';
-    }
-    startElapsedTimeCounter();  // Start the time counter
-    
-    // Disable inputs during generation
-    disableInputsDuringGeneration(true);
-    
-    // Get parameters for generating HTML
-    const params = {
-        api_key: apiKey,
-        source: inputContent,
-        format_prompt: elements.additionalPrompt ? elements.additionalPrompt.value : '',
-        model: elements.model ? elements.model.value : 'claude-3-7-sonnet-20250219',
-        max_tokens: elements.maxTokens ? parseInt(elements.maxTokens.value) : 128000,
-        temperature: elements.temperature ? parseFloat(elements.temperature.value) : 1.0,
-        thinking_budget: elements.thinkingBudget ? parseInt(elements.thinkingBudget.value) : 32000
-    };
-
-    try {
-        // Start the streaming process
-        await generateHTMLStreamWithReconnection(
-            params.api_key,
-            params.source,
-            params.format_prompt,
-            params.model,
-            params.max_tokens,
-            params.temperature,
-            params.thinking_budget
-        );
-    } catch (error) {
-        console.error('Error in generation:', error);
-        showNotification(`Generation error: ${error.message}`, 'error');
         
-        // Reset UI
-        if (elements.processingStatus) {
-            elements.processingStatus.classList.add('hidden');
+        if (!content) {
+            showToast('Please provide content to transform', 'error');
+            return;
         }
-        stopElapsedTimeCounter();  // Stop the time counter
-        state.processing = false;
-        disableInputsDuringGeneration(false);  // Re-enable inputs
-        updateGenerateButtonState();
+        
+        // Update UI for generation start
+        disableInputsDuringGeneration(true);
+        state.isGenerating = true;
+        showResultSection();
+        state.generatedHtml = '';
+        
+        // Clear previous content and start animation
+        updateHtmlDisplay();
+        elements.previewIframe.srcdoc = '';
+        
+        // Reset output stats
+        elements.inputTokens.textContent = '0';
+        elements.outputTokens.textContent = '0';
+        elements.thinkingTokens.textContent = '0';
+        elements.totalCost.textContent = '$0.00';
+        
+        // Start elapsed time counter
+        startElapsedTimeCounter();
+        
+        // Show processing animation
+        startProcessingAnimation();
+        
+        // Check if test mode is enabled
+        if (state.testMode) {
+            // Use test mode API endpoint
+            const endpointUrl = window.location.hostname === 'localhost' ? 
+                '/api/test-generate' : '/api/test-generate';
+                
+            // Call test endpoint
+            try {
+                const response = await fetch(endpointUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        content: content,
+                        format_prompt: formatPrompt,
+                        temperature: temperature,
+                        max_tokens: maxTokens,
+                        thinking_budget: thinkingBudget
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+                }
+                
+                const result = await response.json();
+                
+                // Process the test result
+                state.generatedHtml = result.html;
+                
+                // Update UI with the results
+                updateHtmlDisplay();
+                updatePreview();
+                
+                // Update usage statistics
+                if (result.usage) {
+                    elements.inputTokens.textContent = result.usage.input_tokens.toLocaleString();
+                    elements.outputTokens.textContent = result.usage.output_tokens.toLocaleString();
+                    elements.thinkingTokens.textContent = result.usage.thinking_tokens.toLocaleString();
+                    elements.totalCost.textContent = `$${result.usage.total_cost.toFixed(4)}`;
+                    
+                    // Update storage with new usage stats
+                    try {
+                        // Get existing stats
+                        const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                        
+                        // Update stats
+                        existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                        existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                            (result.usage.input_tokens + result.usage.output_tokens);
+                        existingStats.totalCost = (existingStats.totalCost || 0) + result.usage.total_cost;
+                        
+                        // Save updated stats
+                        localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                        
+                        // Update UI if stats container exists
+                        if (document.getElementById('total-runs')) {
+                            document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                        }
+                        if (document.getElementById('total-tokens')) {
+                            document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                        }
+                        if (document.getElementById('total-cost')) {
+                            document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                        }
+                    } catch (e) {
+                        console.error('Error updating usage statistics:', e);
+                    }
+                }
+                
+                // Update UI for generation completion
+                stopProcessingAnimation();
+                resetGenerationUI(true);
+                
+                // Show elapsed time
+                if (result.usage && result.usage.time_elapsed) {
+                    elements.elapsedTime.textContent = `Completed in: ${formatTime(Math.floor(result.usage.time_elapsed))}`;
+                }
+                
+                showToast('Test visualization complete! (Test Mode)', 'success');
+                
+            } catch (error) {
+                console.error('Test generation error:', error);
+                showToast(`Error: ${error.message}`, 'error');
+                resetGenerationUI();
+            }
+        } else {
+            // Use regular generation with streaming
+            await generateHTMLStreamWithReconnection(
+                apiKey, content, formatPrompt, 
+                'claude-3-7-sonnet-20240307', maxTokens, 
+                temperature, thinkingBudget
+            );
+        }
+    } catch (error) {
+        console.error('Generation error:', error);
+        showToast(`Error: ${error.message}`, 'error');
+        resetGenerationUI();
     }
 }
 
@@ -1780,6 +1820,46 @@ function showNotification(message, type = 'info') {
     // Implementation is similar to showToast function
     console.log(`NOTIFICATION (${type}): ${message}`);
     showToast(message, type);
+}
+
+// Toggle test mode state
+function toggleTestMode() {
+    state.testMode = elements.testModeToggle.checked;
+    
+    // Show or hide test mode indicator
+    if (state.testMode) {
+        showTestModeIndicator();
+    } else {
+        hideTestModeIndicator();
+    }
+    
+    console.log(`Test mode ${state.testMode ? 'enabled' : 'disabled'}`);
+}
+
+// Show test mode indicator near the generate button
+function showTestModeIndicator() {
+    // Create indicator if it doesn't exist
+    if (!elements.testModeIndicator) {
+        const indicator = document.createElement('span');
+        indicator.id = 'test-mode-indicator';
+        indicator.className = 'test-mode-active ml-2';
+        indicator.innerHTML = '<i class="fas fa-vial"></i> Test Mode';
+        
+        // Insert after generate button
+        if (elements.generateBtn && elements.generateBtn.parentNode) {
+            elements.generateBtn.parentNode.insertBefore(indicator, elements.generateBtn.nextSibling);
+            elements.testModeIndicator = indicator;
+        }
+    } else if (elements.testModeIndicator) {
+        elements.testModeIndicator.classList.remove('hidden');
+    }
+}
+
+// Hide test mode indicator
+function hideTestModeIndicator() {
+    if (elements.testModeIndicator) {
+        elements.testModeIndicator.classList.add('hidden');
+    }
 }
 
 // Initialize the app
