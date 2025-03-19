@@ -288,32 +288,57 @@ class VercelCompatibleClient:
                 headers["anthropic-beta"] = beta
             elif betas and isinstance(betas, list) and len(betas) > 0:
                 headers["anthropic-beta"] = ",".join(betas)
-                
-            # Make the API request using requests directly to avoid method call issues
-            try:
-                print("Making direct API request to Anthropic...")
-                response = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    json=payload,
-                    headers=headers,
-                    timeout=600  # Increased timeout for large responses
-                )
-                
-                # Check for errors
-                if response.status_code != 200:
-                    error_message = f"Request error: API error {response.status_code}: {response.text}"
-                    print(f"Error in message creation: {error_message}")
-                    raise Exception(f"Message creation failed: {error_message}")
-                
-                # Parse the response
-                result = response.json()
-                
-                # Return a formatted response object
-                return VercelMessageResponse(result)
-                
-            except Exception as e:
-                print(f"Error in message creation: {str(e)}")
-                raise Exception(f"Message creation failed: {str(e)}")
+            
+            # Retry logic with exponential backoff
+            max_retries = 5
+            retry_count = 0
+            base_delay = 1  # Starting delay in seconds
+            
+            while True:
+                try:
+                    print(f"Making direct API request to Anthropic (attempt {retry_count + 1}/{max_retries + 1})...")
+                    response = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        json=payload,
+                        headers=headers,
+                        timeout=600  # Increased timeout for large responses
+                    )
+                    
+                    # Check for overloaded error (529)
+                    if response.status_code == 529:
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            delay = base_delay * (2 ** (retry_count - 1))  # Exponential backoff
+                            print(f"Anthropic API overloaded (529). Retrying in {delay} seconds... (Attempt {retry_count}/{max_retries})")
+                            time.sleep(delay)
+                            continue
+                    
+                    # Check for other errors
+                    if response.status_code != 200:
+                        error_data = response.json() if response.text else {"error": "Unknown error"}
+                        error_message = f"Request error: API error {response.status_code}: {error_data}"
+                        print(f"Error in message creation: {error_message}")
+                        raise Exception(f"Message creation failed: {error_message}")
+                    
+                    # Parse the response
+                    result = response.json()
+                    
+                    # Return a formatted response object
+                    return VercelMessageResponse(result)
+                    
+                except requests.exceptions.RequestException as e:
+                    # Handle network errors with retry
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        delay = base_delay * (2 ** (retry_count - 1))
+                        print(f"Network error: {str(e)}. Retrying in {delay} seconds... (Attempt {retry_count}/{max_retries})")
+                        time.sleep(delay)
+                    else:
+                        print(f"Max retries exceeded for network error: {str(e)}")
+                        raise Exception(f"Message creation failed after {max_retries} retries: {str(e)}")
+                except Exception as e:
+                    print(f"Error in message creation: {str(e)}")
+                    raise Exception(f"Message creation failed: {str(e)}")
 
 # Wrapper for the streaming response
 class VercelStreamingResponse:

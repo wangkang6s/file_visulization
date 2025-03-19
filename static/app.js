@@ -250,6 +250,14 @@ function setupEventListeners() {
     // Test mode toggle
     if (elements.testModeToggle) {
         elements.testModeToggle.addEventListener('change', toggleTestMode);
+        
+        // Initialize from localStorage
+        const savedTestMode = localStorage.getItem('test_mode') === 'true';
+        if (savedTestMode) {
+            elements.testModeToggle.checked = true;
+            state.testMode = true;
+            showTestModeIndicator();
+        }
     }
 }
 
@@ -914,7 +922,7 @@ async function startGeneration() {
                 
                 // Show elapsed time
                 if (result.usage && result.usage.time_elapsed) {
-                    elements.elapsedTime.textContent = `Completed in: ${formatTime(Math.floor(result.usage.time_elapsed))}`;
+                    displayElapsedTime(Math.floor(result.usage.time_elapsed));
                 }
                 
                 showToast('Test visualization complete! (Test Mode)', 'success');
@@ -1220,6 +1228,14 @@ function showResultSection() {
 function startElapsedTimeCounter() {
     clearInterval(state.elapsedTimeInterval);
     
+    // Initialize the start time properly
+    state.startTime = new Date();
+    
+    // Update the counter immediately once
+    const elapsed = Math.floor((new Date() - state.startTime) / 1000);
+    elements.elapsedTime.textContent = `Elapsed: ${formatTime(elapsed)}`;
+    
+    // Then set up the interval for subsequent updates
     state.elapsedTimeInterval = setInterval(() => {
         const elapsed = Math.floor((new Date() - state.startTime) / 1000);
         elements.elapsedTime.textContent = `Elapsed: ${formatTime(elapsed)}`;
@@ -1228,6 +1244,12 @@ function startElapsedTimeCounter() {
 
 function stopElapsedTimeCounter() {
     clearInterval(state.elapsedTimeInterval);
+}
+
+function displayElapsedTime(seconds) {
+    if (seconds && elements.elapsedTime) {
+        elements.elapsedTime.textContent = `Completed in: ${formatTime(seconds)}`;
+    }
 }
 
 function formatTime(seconds) {
@@ -1369,7 +1391,7 @@ function handleStreamEvent(event) {
             
             // Set completion message with elapsed time
             if (event.usage && event.usage.time_elapsed) {
-                elements.elapsedTime.textContent = `Completed in: ${formatTime(Math.floor(event.usage.time_elapsed))}`;
+                displayElapsedTime(Math.floor(event.usage.time_elapsed));
             }
             
             // Update usage statistics
@@ -1924,24 +1946,6 @@ function hideTestModeIndicator() {
         elements.testModeIndicator.classList.add('hidden');
     }
 }
-
-// Initialize test mode from localStorage on page load
-document.addEventListener('DOMContentLoaded', function() {
-    // Set up event listeners for all UI elements
-    setupEventListeners();
-    
-    // Initialize test mode from localStorage
-    if (elements.testModeToggle) {
-        const savedTestMode = localStorage.getItem('test_mode') === 'true';
-        if (savedTestMode) {
-            elements.testModeToggle.checked = true;
-            state.testMode = true;
-            showTestModeIndicator();
-        }
-    }
-    
-    // Other initialization code...
-});
 
 // Initialize the app
 document.addEventListener('DOMContentLoaded', init); 

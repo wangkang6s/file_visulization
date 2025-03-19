@@ -770,11 +770,13 @@ def test_generate():
         client = None
         try:
             client = create_anthropic_client(api_key)
+            print("Client created successfully")
         except Exception as e:
+            print(f"Error creating client: {str(e)}")
             return jsonify({
                 "success": False,
                 "error": f"API key validation failed: {str(e)}"
-            })
+            }), 400
         
         # Brief system prompt to minimize token usage
         system_prompt = "Generate minimal HTML to confirm the API integration works."
@@ -787,6 +789,7 @@ def test_generate():
         
         try:
             # Call Anthropic API with minimal settings
+            print(f"Calling Anthropic API with test message (model: claude-3-haiku-20240307)")
             response = client.messages.create(
                 model="claude-3-haiku-20240307",  # Use smaller model to save tokens
                 max_tokens=100,  # Minimal output
@@ -826,15 +829,50 @@ def test_generate():
                 "message": "Test completed with minimal token usage"
             })
         except Exception as e:
+            print(f"Error calling Anthropic API: {str(e)}")
+            
+            # Check if this is an overloaded error
+            error_message = str(e)
+            if "529" in error_message and "Overloaded" in error_message:
+                return jsonify({
+                    "success": False,
+                    "error": "Anthropic API is currently overloaded. Please try again later.",
+                    "code": 529,
+                    "html": "<html><body><h1>Test Mode - API Overloaded</h1><p>The Anthropic API is currently experiencing high demand. Please try again later.</p></body></html>"
+                }), 503
+            
+            # If not overloaded, return a generic HTML with the error
+            error_html = f"""
+            <html>
+            <head><title>Test Mode Output</title></head>
+            <body>
+                <h1>Test Mode - API Error</h1>
+                <p>There was an error calling the Anthropic API:</p>
+                <pre style="background:#f8f8f8;padding:10px;border-radius:5px;color:#e74c3c">{error_message}</pre>
+                <p>Please check your API key and try again.</p>
+            </body>
+            </html>
+            """
+            
             return jsonify({
                 "success": False,
-                "error": f"Error calling Anthropic API: {str(e)}"
+                "error": f"Error calling Anthropic API: {str(e)}",
+                "html": error_html,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "thinking_tokens": 0,
+                    "time_elapsed": time.time() - start_time,
+                    "total_cost": 0
+                }
             }), 500
             
     except Exception as e:
+        print(f"Unhandled exception in test_generate: {str(e)}")
         return jsonify({
             "success": False, 
-            "error": f"Error in test generation: {str(e)}"
+            "error": f"Error in test generation: {str(e)}",
+            "html": f"<html><body><h1>Test Mode - Server Error</h1><p>Error: {str(e)}</p></body></html>"
         }), 500
 
 if __name__ == "__main__":
