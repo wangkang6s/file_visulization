@@ -38,6 +38,9 @@ module.exports = async (req, res) => {
   // Function to wait
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   
+  // Start time for tracking elapsed time
+  const startTime = Date.now();
+  
   try {
     // Log the start of the request
     console.log('Process-stream request received');
@@ -207,8 +210,9 @@ module.exports = async (req, res) => {
       const contentTokens = Math.floor(content.length / 4);
       const inputTokens = systemPromptTokens + contentTokens;
       const outputTokens = Math.floor(htmlOutput.length / 4);
+      const elapsed = Date.now() - startTime;
       
-      console.log(`Calculated usage - inputTokens: ${inputTokens}, outputTokens: ${outputTokens}`);
+      console.log(`Calculated usage - inputTokens: ${inputTokens}, outputTokens: ${outputTokens}, time: ${elapsed}ms`);
       
       // Send completion message
       writeEvent('message_complete', {
@@ -218,9 +222,10 @@ module.exports = async (req, res) => {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           thinking_tokens: thinkingBudget,
-          total_cost: ((inputTokens + outputTokens) / 1000000 * 3.0)
+          total_cost: ((inputTokens + outputTokens) / 1000000 * 3.0),
+          time_elapsed: elapsed / 1000 // Convert to seconds
         },
-        html: escape(htmlOutput)
+        html: htmlOutput // Don't escape the HTML here
       });
       
       // Send end event

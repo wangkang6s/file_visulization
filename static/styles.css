@@ -67,6 +67,7 @@ input[type="range"]::-moz-range-thumb:hover {
 
 .animate-progress {
   animation: progress 60s ease-in-out;
+  transition: width 120s cubic-bezier(0.1, 0.05, 0.5, 0.9);
 }
 
 /* Smooth transitions */
@@ -603,7 +604,19 @@ button:disabled {
 /* Add styles for the test mode toggle switch */
 #test-mode:checked ~ .dot {
     transform: translateX(100%);
+}
+
+#test-mode:checked ~ .block {
     background-color: #0ea5e9;
+}
+
+.test-mode-active {
+    background-color: #ef4444;
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
 }
 
 /* Add transition for smooth toggle animation */

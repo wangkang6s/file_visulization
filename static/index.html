@@ -476,6 +476,22 @@
                                 class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
                             <p class="text-xs text-gray-500 mt-1">Allocates how much "thinking" Claude can do before responding. Higher values allow deeper analysis of complex content.</p>
                         </div>
+                        
+                        <!-- Test Mode Toggle -->
+                        <div>
+                            <div class="flex items-center justify-between">
+                                <label for="test-mode" class="flex items-center cursor-pointer">
+                                    <span class="font-medium text-gray-900 mr-3">Test Mode</span>
+                                    <div class="relative">
+                                        <input type="checkbox" id="test-mode" class="sr-only">
+                                        <div class="block bg-gray-300 w-14 h-8 rounded-full"></div>
+                                        <div class="dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition"></div>
+                                    </div>
+                                </label>
+                                <div class="text-xs text-gray-500 ml-2">Developer use only</div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Uses predefined test data instead of calling Anthropic API.</p>
+                        </div>
                     </div>
                 </div>
 

@@ -1231,9 +1231,19 @@ function stopElapsedTimeCounter() {
 }
 
 function formatTime(seconds) {
-    const mins = Math.floor(seconds / 60);
+    if (seconds < 0 || isNaN(seconds)) {
+        seconds = 0;
+    }
+
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    
+    if (hours > 0) {
+        return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    } else {
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
 }
 
 async function processWithStreaming(data) {
@@ -1479,22 +1489,28 @@ function resetGenerationUI(success = false) {
     
     if (elements.processingStatus) {
         if (success) {
-            // Change the processing status to show completion
+            // Change the processing status to show completion but keep it visible
             if (elements.processingText) {
-                elements.processingText.textContent = "Finished!";
+                elements.processingText.textContent = "Completed";
             }
             if (elements.processingIcon) {
                 elements.processingIcon.classList.remove("fa-spinner", "fa-spin");
                 elements.processingIcon.classList.add("fa-check-circle");
                 elements.processingIcon.style.color = "#10B981"; // Green color
             }
-            // Keep it visible for a moment, then hide
-            setTimeout(() => {
-                elements.processingStatus.classList.add('hidden');
-            }, 3000);
+            // Keep it visible permanently
+            elements.processingStatus.classList.remove('hidden');
         } else {
-            // Just hide on error
-            elements.processingStatus.classList.add('hidden');
+            // On error, update status but keep visible
+            if (elements.processingText) {
+                elements.processingText.textContent = "Failed";
+            }
+            if (elements.processingIcon) {
+                elements.processingIcon.classList.remove("fa-spinner", "fa-spin");
+                elements.processingIcon.classList.add("fa-exclamation-circle");
+                elements.processingIcon.style.color = "#EF4444"; // Red color
+            }
+            elements.processingStatus.classList.remove('hidden');
         }
     }
     
@@ -1525,7 +1541,29 @@ function downloadHtmlFile() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'visualization.html';
+        
+        // Generate filename based on content when no file is uploaded
+        let filename = 'visualization.html';
+        if (state.activeTab === 'text' && elements.textInput.value) {
+            // Extract first few words from text input to create filename
+            const firstFewWords = elements.textInput.value
+                .trim()
+                .split(/\s+/)
+                .slice(0, 4)
+                .join('_')
+                .replace(/[^a-zA-Z0-9_-]/g, '')
+                .substring(0, 30); // Limit length
+                
+            if (firstFewWords) {
+                filename = `${firstFewWords}.html`;
+            }
+        } else if (state.fileName) {
+            // If a file was uploaded, base the name on that
+            const baseName = state.fileName.split('.')[0];
+            filename = `${baseName}_visualization.html`;
+        }
+        
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
