@@ -228,7 +228,8 @@ class VercelCompatibleClient:
         
         def create(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None, beta=None):
             """
-            Create a message with the Anthropic API directly.
+            Create a message with the Anthropic API directly with retry logic for 529 overloaded errors.
+            Implements exponential backoff for retries.
             """
             # Convert messages to API format
             formatted_messages = []
@@ -288,32 +289,93 @@ class VercelCompatibleClient:
                 headers["anthropic-beta"] = beta
             elif betas and isinstance(betas, list) and len(betas) > 0:
                 headers["anthropic-beta"] = ",".join(betas)
+            
+            # Implement retry logic with exponential backoff
+            max_retries = 5
+            retry_count = 0
+            backoff_time = 1  # Start with 1 second
+            last_error = None
                 
-            # Make the API request using requests directly to avoid method call issues
-            try:
-                print("Making direct API request to Anthropic...")
-                response = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    json=payload,
-                    headers=headers,
-                    timeout=600  # Increased timeout for large responses
-                )
+            while retry_count <= max_retries:
+                # Make the API request using requests directly to avoid method call issues
+                try:
+                    print(f"Making direct API request to Anthropic (attempt {retry_count + 1}/{max_retries + 1})...")
+                    start_time = time.time()
+                    
+                    response = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        json=payload,
+                        headers=headers,
+                        timeout=600  # Increased timeout for large responses
+                    )
+                    
+                    elapsed_time = time.time() - start_time
+                    print(f"API request completed in {elapsed_time:.2f} seconds with status code: {response.status_code}")
+                    
+                    # Check for errors
+                    if response.status_code != 200:
+                        error_detail = f"API request failed with status {response.status_code}"
+                        
+                        try:
+                            error_data = response.json()
+                            error_detail = f"{error_detail}: {json.dumps(error_data)}"
+                            
+                            # Check specifically for 529 Overloaded errors
+                            if response.status_code == 529 or (isinstance(error_data, dict) and error_data.get('code') == 529):
+                                if retry_count < max_retries:
+                                    retry_count += 1
+                                    wait_time = backoff_time
+                                    backoff_time *= 2  # Exponential backoff
+                                    
+                                    print(f"Anthropic API overloaded (529). Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
+                                    time.sleep(wait_time)
+                                    continue
+                        except:
+                            # If we can't parse the response as JSON, just use the text
+                            error_detail = f"{error_detail}: {response.text}"
+                        
+                        # If we're here, either it's not a 529 error or we've exhausted retries
+                        raise Exception(error_detail)
+                    
+                    # Parse the response
+                    result = response.json()
+                    print(f"Request successful. Response time: {elapsed_time:.2f}s")
+                    
+                    # Return a formatted response object
+                    result['_request_time'] = elapsed_time  # Add the request time for reference
+                    return VercelMessageResponse(result)
+                    
+                except requests.exceptions.RequestException as e:
+                    # Handle request exceptions (connection errors, timeouts, etc.)
+                    last_error = e
+                    error_message = str(e)
+                    print(f"Request exception: {error_message}")
+                    
+                    # Check if it's likely a 529 error from the error message
+                    is_overloaded = "529" in error_message and "Overloaded" in error_message
+                    
+                    if is_overloaded and retry_count < max_retries:
+                        retry_count += 1
+                        wait_time = backoff_time
+                        backoff_time *= 2  # Exponential backoff
+                        
+                        print(f"Possible Anthropic API overload. Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # If it's not a 529 error or we've exhausted retries, exit the loop
+                        break
                 
-                # Check for errors
-                if response.status_code != 200:
-                    error_message = f"Request error: API error {response.status_code}: {response.text}"
-                    print(f"Error in message creation: {error_message}")
-                    raise Exception(f"Message creation failed: {error_message}")
-                
-                # Parse the response
-                result = response.json()
-                
-                # Return a formatted response object
-                return VercelMessageResponse(result)
-                
-            except Exception as e:
-                print(f"Error in message creation: {str(e)}")
-                raise Exception(f"Message creation failed: {str(e)}")
+                except Exception as e:
+                    # Handle other exceptions
+                    last_error = e
+                    print(f"Error in message creation: {str(e)}")
+                    break
+            
+            # If we've exhausted retries or had an error that wasn't a 529
+            error_message = str(last_error) if last_error else "Unknown error"
+            print(f"Failed after {retry_count} retry attempts: {error_message}")
+            raise Exception(f"Message creation failed after {retry_count} retries: {error_message}")
 
 # Wrapper for the streaming response
 class VercelStreamingResponse:

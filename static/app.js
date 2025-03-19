@@ -1198,6 +1198,7 @@ function formatTime(seconds) {
 
 async function processWithStreaming(data) {
     try {
+        console.log("Making API request to /api/process...");
         const response = await fetch(`${API_URL}/api/process`, {
             method: 'POST',
             headers: {
@@ -1211,177 +1212,86 @@ async function processWithStreaming(data) {
             throw new Error(errorText);
         }
         
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        // Process standard JSON response
+        const jsonResponse = await response.json();
+        console.log("Received response from /api/process:", jsonResponse);
         
-        while (true) {
-            const { value, done } = await reader.read();
-            
-            if (done) {
-                break;
-            }
-            
-            buffer += decoder.decode(value, { stream: true });
-            
-            const events = buffer.split('\n\n');
-            buffer = events.pop() || '';
-            
-            for (const event of events) {
-                if (event.startsWith('data: ')) {
-                    try {
-                        const jsonData = JSON.parse(event.slice(6));
-                        handleStreamEvent(jsonData);
-                    } catch (e) {
-                        console.error('Failed to parse event:', e);
-                        // If we can't parse an event, make sure the UI is still updated
-                        stopProcessingAnimation();
-                    }
-                }
-            }
-        }
-        
-        // Ensure animations are stopped if the stream ends without a completion event
-        if (state.processing) {
-            console.log('Stream ended without completion event, stopping animations');
+        if (jsonResponse.error) {
+            console.error("API error:", jsonResponse.error);
+            showToast(`Error: ${jsonResponse.error}`, 'error');
             stopProcessingAnimation();
             resetGenerationUI();
+            return;
         }
         
+        // Extract HTML content
+        if (jsonResponse.html) {
+            state.generatedHtml = jsonResponse.html;
+            updateHtmlDisplay();
+            updatePreview();
+            showResultSection();
+        } else {
+            console.error("No HTML content in response");
+            showToast("Error: No HTML content received", 'error');
+        }
+        
+        // Update usage statistics
+        if (jsonResponse.usage) {
+            console.log("Updating usage statistics:", jsonResponse.usage);
+            
+            // Update token counts
+            elements.inputTokens.textContent = (jsonResponse.usage.input_tokens || 0).toLocaleString();
+            elements.outputTokens.textContent = (jsonResponse.usage.output_tokens || 0).toLocaleString();
+            elements.thinkingTokens.textContent = (jsonResponse.usage.thinking_tokens || 0).toLocaleString();
+            
+            // Calculate total cost
+            const totalCost = ((jsonResponse.usage.input_tokens || 0) + (jsonResponse.usage.output_tokens || 0)) / 1000000 * 3.0;
+            elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+            
+            // Update storage with new usage stats
+            try {
+                // Get existing stats
+                const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                
+                // Update stats
+                existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                    ((jsonResponse.usage.input_tokens || 0) + (jsonResponse.usage.output_tokens || 0));
+                existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
+                
+                // Save updated stats
+                localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                
+                // Update UI if stats container exists
+                if (document.getElementById('total-runs')) {
+                    document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                }
+                if (document.getElementById('total-tokens')) {
+                    document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                }
+                if (document.getElementById('total-cost')) {
+                    document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                }
+            } catch (e) {
+                console.error('Error updating usage statistics:', e);
+            }
+            
+            // Set elapsed time if available
+            if (jsonResponse.usage.time_elapsed) {
+                elements.elapsedTime.textContent = `Completed in: ${formatTime(Math.floor(jsonResponse.usage.time_elapsed))}`;
+            }
+        }
+        
+        // Complete the UI updates
+        stopProcessingAnimation();
+        resetGenerationUI(true);
+        showToast('Visualization complete!', 'success');
+        
     } catch (error) {
-        console.error('Streaming error:', error);
+        console.error('API error:', error);
         showToast(`Error: ${error.message}`, 'error');
         stopProcessingAnimation();
         resetGenerationUI();
-    }
-}
-
-function handleStreamEvent(event) {
-    // Ensure the event has a type property
-    if (!event || !event.type) {
-        console.error('Received event without type:', event);
-        return;
-    }
-    
-    console.log(`Received ${event.type} event:`, event);
-    
-    // Process events based on their type
-    switch (event.type) {
-        case 'start':
-            console.log('Generation started:', event.message);
-            break;
-            
-        case 'delta':
-            // Append delta content to the generated HTML
-            state.generatedHtml += event.content || '';
-            updateHtmlDisplay();
-            break;
-            
-        case 'thinking_update':
-            if (event.thinking && event.thinking.content) {
-                elements.thinkingOutput.textContent = event.thinking.content;
-                elements.thinkingOutput.classList.remove('hidden');
-            }
-            break;
-            
-        case 'status':
-            // Handle status updates (like retry notifications)
-            console.log('Status update:', event.message);
-            // Update the status message in the UI
-            if (elements.statusMessage) {
-                elements.statusMessage.textContent = event.message;
-                elements.statusMessage.classList.remove('hidden');
-            } else {
-                // If no dedicated status element exists, show a toast notification
-                showToast(event.message, 'info');
-            }
-            break;
-            
-        case 'error':
-            console.error('Generation error:', event.error);
-            showToast(`Error: ${event.error}`, 'error');
-            
-            // Show detailed error if available
-            if (event.details) {
-                console.error('Error details:', event.details);
-            }
-            
-            // Stop processing animation on error
-            stopProcessingAnimation();
-            resetGenerationUI();
-            break;
-            
-        case 'message_complete':
-            console.log('Generation complete:', event.usage);
-            
-            // Ensure processing animation stops completely
-            stopProcessingAnimation();
-            
-            // Set completion message with elapsed time
-            if (event.usage && event.usage.time_elapsed) {
-                elements.elapsedTime.textContent = `Completed in: ${formatTime(Math.floor(event.usage.time_elapsed))}`;
-            }
-            
-            // Update usage statistics
-            if (event.usage) {
-                elements.inputTokens.textContent = event.usage.input_tokens.toLocaleString();
-                elements.outputTokens.textContent = event.usage.output_tokens.toLocaleString();
-                elements.thinkingTokens.textContent = event.usage.thinking_tokens.toLocaleString();
-                
-                // Make sure total_cost is available or calculate it
-                const totalCost = event.usage.total_cost || 
-                    ((event.usage.input_tokens + event.usage.output_tokens) / 1000000 * 3.0);
-                elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
-                
-                // Update storage with new usage stats
-                try {
-                    // Get existing stats
-                    const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
-                    
-                    // Update stats
-                    existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
-                    existingStats.totalTokens = (existingStats.totalTokens || 0) + 
-                        (event.usage.input_tokens + event.usage.output_tokens);
-                    existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
-                    
-                    // Save updated stats
-                    localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
-                    
-                    // Update UI if stats container exists
-                    if (document.getElementById('total-runs')) {
-                        document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
-                    }
-                    if (document.getElementById('total-tokens')) {
-                        document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
-                    }
-                    if (document.getElementById('total-cost')) {
-                        document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
-                    }
-                } catch (e) {
-                    console.error('Error updating usage statistics:', e);
-                }
-            }
-            
-            // Finalize HTML display
-            updateHtmlDisplay();
-            
-            // Update preview
-            updatePreview();
-            
-            // Reset UI elements
-            resetGenerationUI(true);
-            
-            // Show completed message
-            showToast('Visualization complete!', 'success');
-            break;
-            
-        case 'deployment_note':
-            // Add deployment note to the generated HTML
-            if (event.content) {
-                state.generatedHtml += event.content;
-                updateHtmlDisplay();
-            }
-            break;
     }
 }
 
