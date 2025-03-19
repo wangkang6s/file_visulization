@@ -873,8 +873,22 @@ async function startGeneration() {
                 
                 const result = await response.json();
                 
-                // Process the test result
-                state.generatedHtml = result.html;
+                // Check if the result indicates an error but includes HTML
+                if (!result.success && result.html) {
+                    console.log('Test generate returned an error with HTML:', result.error);
+                    // Still use the HTML even though it's an error response
+                    state.generatedHtml = result.html;
+                    
+                    // Show the error message
+                    if (result.code === 529) {
+                        showToast('Anthropic API is currently overloaded. Please try again later.', 'error');
+                    } else {
+                        showToast(`Error: ${result.error}`, 'error');
+                    }
+                } else {
+                    // Process the successful test result
+                    state.generatedHtml = result.html;
+                }
                 
                 // Update UI with the results
                 updateHtmlDisplay();

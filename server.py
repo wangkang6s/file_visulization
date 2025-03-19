@@ -787,32 +787,68 @@ def test_generate():
         # Record start time
         start_time = time.time()
         
-        try:
-            # Call Anthropic API with minimal settings
-            print(f"Calling Anthropic API with test message (model: claude-3-haiku-20240307)")
-            response = client.messages.create(
-                model="claude-3-haiku-20240307",  # Use smaller model to save tokens
-                max_tokens=100,  # Minimal output
-                temperature=0.5,
-                system=system_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            )
-            
-            # Get the response content
-            html_output = response.content[0].text
-            
+        # Implement retry logic with exponential backoff
+        max_retries = 5
+        retry_count = 0
+        base_delay = 1  # Start with 1 second (in seconds)
+        success = False
+        response = None
+        html_output = None
+        error_message = None
+        
+        while retry_count <= max_retries and not success:
+            try:
+                print(f"Calling Anthropic API with test message (attempt {retry_count + 1}/{max_retries + 1})")
+                # Call Anthropic API with minimal settings
+                response = client.messages.create(
+                    model="claude-3-haiku-20240307",  # Use smaller model to save tokens
+                    max_tokens=100,  # Minimal output
+                    temperature=0.5,
+                    system=system_prompt,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": user_content
+                        }
+                    ]
+                )
+                
+                # If we get here without error, set success flag
+                success = True
+                
+                # Get the response content if successful
+                if hasattr(response, 'content') and len(response.content) > 0:
+                    if hasattr(response.content[0], 'text'):
+                        html_output = response.content[0].text
+                    elif isinstance(response.content[0], dict) and 'text' in response.content[0]:
+                        html_output = response.content[0]['text']
+                
+            except Exception as e:
+                error_message = str(e)
+                print(f"Error in API call attempt {retry_count + 1}: {error_message}")
+                
+                # Check if this is an overloaded error (529)
+                is_overloaded = "529" in error_message and "Overloaded" in error_message
+                
+                if is_overloaded and retry_count < max_retries:
+                    retry_count += 1
+                    wait_time = base_delay * (2 ** (retry_count - 1))  # Exponential backoff
+                    print(f"Anthropic API overloaded. Retry {retry_count}/{max_retries} after {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # Break the loop for other errors or if retries exhausted
+                    break
+        
+        # Calculate elapsed time
+        elapsed_time = time.time() - start_time
+        
+        # If successful, return the generated HTML
+        if success and html_output:
             # Calculate token usage (estimates)
             system_prompt_tokens = len(system_prompt) // 3
             content_tokens = len(truncated_content) // 4
             output_tokens = len(html_output) // 4
-            
-            # Calculate elapsed time
-            elapsed_time = time.time() - start_time
             
             # Return response with HTML and token usage statistics
             return jsonify({
@@ -828,52 +864,77 @@ def test_generate():
                 "test_mode": True,
                 "message": "Test completed with minimal token usage"
             })
-        except Exception as e:
-            print(f"Error calling Anthropic API: {str(e)}")
+        else:
+            # Return an error message with nice HTML
+            is_overloaded = error_message and "529" in error_message and "Overloaded" in error_message
             
-            # Check if this is an overloaded error
-            error_message = str(e)
-            if "529" in error_message and "Overloaded" in error_message:
-                return jsonify({
-                    "success": False,
-                    "error": "Anthropic API is currently overloaded. Please try again later.",
-                    "code": 529,
-                    "html": "<html><body><h1>Test Mode - API Overloaded</h1><p>The Anthropic API is currently experiencing high demand. Please try again later.</p></body></html>"
-                }), 503
-            
-            # If not overloaded, return a generic HTML with the error
             error_html = f"""
             <html>
-            <head><title>Test Mode Output</title></head>
+            <head>
+                <title>Test Mode - {("API Overloaded" if is_overloaded else "API Error")}</title>
+                <style>
+                    body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; }}
+                    .error {{ background-color: #fee2e2; border-left: 4px solid #ef4444; padding: 1rem; border-radius: 4px; margin: 1rem 0; }}
+                    pre {{ background-color: #f7fafc; padding: 1rem; border-radius: 4px; overflow-x: auto; }}
+                    h1 {{ color: #1e293b; }}
+                </style>
+            </head>
             <body>
-                <h1>Test Mode - API Error</h1>
-                <p>There was an error calling the Anthropic API:</p>
-                <pre style="background:#f8f8f8;padding:10px;border-radius:5px;color:#e74c3c">{error_message}</pre>
-                <p>Please check your API key and try again.</p>
+                <h1>Test Mode - {("API Overloaded" if is_overloaded else "API Error")}</h1>
+                <p>{"The Anthropic API is currently experiencing high demand and is overloaded. We tried several times but could not get a response." if is_overloaded else "There was an error calling the Anthropic API:"}</p>
+                <div class="error">
+                    <pre>{error_message or "Unknown error"}</pre>
+                </div>
+                <p>Please try again later or check your API key.</p>
             </body>
             </html>
             """
             
             return jsonify({
                 "success": False,
-                "error": f"Error calling Anthropic API: {str(e)}",
+                "error": error_message or "Error calling Anthropic API",
                 "html": error_html,
+                "code": 529 if is_overloaded else 500,
                 "usage": {
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "thinking_tokens": 0,
-                    "time_elapsed": time.time() - start_time,
+                    "time_elapsed": elapsed_time,
                     "total_cost": 0
-                }
-            }), 500
+                },
+                "retries_attempted": retry_count,
+                "test_mode": True
+            }), 200  # Return 200 even with error since we're providing valid HTML
             
     except Exception as e:
         print(f"Unhandled exception in test_generate: {str(e)}")
+        error_html = f"""
+        <html>
+        <head>
+            <title>Test Mode - Server Error</title>
+            <style>
+                body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; }}
+                .error {{ background-color: #fee2e2; border-left: 4px solid #ef4444; padding: 1rem; border-radius: 4px; }}
+                h1 {{ color: #1e293b; }}
+            </style>
+        </head>
+        <body>
+            <h1>Test Mode - Server Error</h1>
+            <p>An unexpected error occurred while processing your request:</p>
+            <div class="error">
+                <p>{str(e)}</p>
+            </div>
+            <p>Please try again later.</p>
+        </body>
+        </html>
+        """
+        
         return jsonify({
             "success": False, 
             "error": f"Error in test generation: {str(e)}",
-            "html": f"<html><body><h1>Test Mode - Server Error</h1><p>Error: {str(e)}</p></body></html>"
-        }), 500
+            "html": error_html,
+            "test_mode": True
+        }), 200  # Return 200 for better client handling
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the Claude 3.7 File Visualizer server')
