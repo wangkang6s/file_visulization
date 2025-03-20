@@ -28,6 +28,14 @@ import traceback
 app = Flask(__name__, static_folder='static')
 CORS(app)  # Enable CORS for all routes
 
+# Set higher request timeout limits for Flask server
+app.config['TIMEOUT'] = 1800  # 30 minutes timeout
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max content size
+
+# Simple in-memory session cache (for production, consider Redis)
+session_cache = {}
+SESSION_CACHE_EXPIRY = 3600  # 1 hour cache expiry
+
 # Claude 3.7 has a total context window of 200,000 tokens (input + output combined)
 # We'll use this constant when estimating token usage
 TOTAL_CONTEXT_WINDOW = 200000
@@ -39,9 +47,23 @@ MAX_INPUT_TOKENS = 195000  # Setting a bit lower than the actual limit to accoun
 # Default settings
 DEFAULT_MAX_TOKENS = 128000
 DEFAULT_THINKING_BUDGET = 32000
+STREAM_CHUNK_SIZE = 2  # Send keepalive every 2 chunks (reduced from 5)
+MAX_SEGMENT_SIZE = 16384  # 16KB per segment (reduced from 32KB)
 
 # Define beta parameter for 128K output
 OUTPUT_128K_BETA = "output-128k-2025-02-19"
+
+# Set higher request timeout and stream chunk sizes
+MAX_TOKENS = 4096
+STREAM_CHUNK_SIZE = 2  # Number of chunks to process before sending a keepalive
+MAX_SEGMENT_SIZE = 16384  # 16KB chunks for content segments
+CHECKPOINT_INTERVAL = 2 * 60  # 2 minutes between checkpoints (reduced from 5)
+
+# Retry settings
+MAX_RETRIES = 10  # Increase from 8 to 10
+MIN_BACKOFF_DELAY = 1  # Start with 1 second delay (reduced from 2)
+MAX_BACKOFF_DELAY = 45  # Max 45 seconds delay (reduced from 60)
+BACKOFF_FACTOR = 1.3  # Use 1.3 instead of 1.5 for more gradual increase
 
 @app.route('/')
 def index():
@@ -399,7 +421,34 @@ def format_stream_event(event_type, data=None):
     """Format a Server-Sent Event (SSE) message"""
     buffer = f"event: {event_type}\n"
     if data:
-        buffer += f"data: {json.dumps(data)}\n"
+        # For status events, expose dispatch-friendly format
+        if event_type == "status":
+            buffer += f"data: {json.dumps(data)}\n"
+            # Add a special field to dispatch custom event on the client side
+            buffer += f"id: status_{int(time.time())}\n"
+            buffer += f"retry: 15000\n"  # Tell client to retry connection after 15 seconds if dropped
+        
+        # For error events, add enough info for the client to handle it
+        elif event_type == "error":
+            # Make sure error data includes code if available
+            if isinstance(data, dict) and not data.get("code") and "details" in data:
+                # Try to extract code from details if it's a JSON string
+                try:
+                    details = data["details"]
+                    if isinstance(details, str) and "{" in details and "code" in details:
+                        import re
+                        code_match = re.search(r'"code"\s*:\s*(\d+)', details)
+                        if code_match:
+                            data["code"] = int(code_match.group(1))
+                except Exception:
+                    pass  # Ignore any errors in code extraction
+            
+            buffer += f"data: {json.dumps(data)}\n"
+            # Add a special field to dispatch custom event
+            buffer += f"id: error_{int(time.time())}\n"
+        else:
+            # Regular event
+            buffer += f"data: {json.dumps(data)}\n"
     buffer += "\n"
     return buffer
 
@@ -525,9 +574,22 @@ def process_stream():
     thinking_budget = int(data.get('thinking_budget', DEFAULT_THINKING_BUDGET))
     
     # Reconnection support
-    session_id = data.get('session_id', None)
+    session_id = data.get('session_id', str(uuid.uuid4()))
     is_reconnect = data.get('is_reconnect', False)
     last_chunk_id = data.get('last_chunk_id', None)
+    
+    # Check if we have a cached response for this session
+    if is_reconnect and session_id in session_cache:
+        cached_data = session_cache[session_id]
+        app.logger.info(f"Found cached data for session {session_id}, resuming from chunk {last_chunk_id}")
+        
+        # If we have partial content already generated, use that to save time
+        if 'generated_text' in cached_data:
+            # Use streaming response to deliver cached content and then continue
+            return Response(
+                stream_with_context(resume_from_cache(session_id, last_chunk_id, api_key)),
+                content_type='text/event-stream'
+            )
     
     # Create Anthropic client
     client = None
@@ -539,8 +601,30 @@ def process_stream():
             "error": f"API key validation failed: {str(e)}"
         })
     
+    # Initialize session cache for this request
+    session_cache[session_id] = {
+        'created_at': time.time(),
+        'last_updated': time.time(),
+        'html_segments': [],
+        'generated_text': '',
+        'chunk_count': 0,
+        'user_content': content[:100000],  # Store for potential reconnection
+        'format_prompt': format_prompt,
+        'model': model,
+        'max_tokens': max_tokens,
+        'temperature': temperature
+    }
+    
     # Prepare system prompt
-    system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
+    system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.* For large outputs, make sure the HTML can be incrementally rendered and uses efficient DOM structures.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
+    
+    # Enhanced system prompt for large content handling
+    if len(content) > 50000:  # If content is large
+        system_prompt += "\n\nIMPORTANT: This is a large document. To ensure the generated HTML can be efficiently processed and rendered by browsers, please follow these additional guidelines:\n1. Implement progressive rendering techniques\n2. Minimize deep DOM nesting - keep DOM depth under 20 levels\n3. Use document fragments and lazy loading where appropriate\n4. Break large content into smaller sections using pagination or tabs\n5. Break large tables into smaller sections with pagination\n6. Use efficient CSS selectors (avoid descendant selectors when possible)\n7. Minimize JavaScript interactions and DOM manipulations\n8. Avoid complex CSS animations and transitions\n9. Use lightweight, optimized SVG instead of heavy images\n10. Implement lazy-loaded images with low-resolution placeholders\n11. Break long sections of text into separate elements with reasonable length"
+
+    # If the content is extremely large, add even more constraints
+    if len(content) > 100000:
+        system_prompt += "\nEXTREMELY LARGE CONTENT DETECTED: Break the content into multiple pages and implement a navigation system. Do not use complex or heavy JavaScript frameworks. Keep CSS minimal and efficient."
     
     # Prepare user prompt - limit content size to avoid timeouts
     content_limit = min(len(content), 100000)  # Limit to 100k characters
@@ -555,12 +639,12 @@ def process_stream():
     # Define a streaming response generator with specific Claude 3.7 implementation
     def stream_generator():
         try:
-            yield format_stream_event("stream_start", {"message": "Stream starting"})
+            yield format_stream_event("stream_start", {"message": "Stream starting", "session_id": session_id})
             
             # Add retry logic with exponential backoff
-            max_retries = 5
+            max_retries = MAX_RETRIES
             retry_count = 0
-            backoff_time = 1  # Start with 1 second
+            backoff_time = MIN_BACKOFF_DELAY  # Start with minimum delay
             
             while retry_count <= max_retries:
                 try:
@@ -590,14 +674,43 @@ def process_stream():
                         message_id = str(uuid.uuid4())
                         generated_text = ""
                         start_time = time.time()
+                        chunk_count = 0
+                        
+                        # Store accumulated HTML for segmented delivery
+                        html_segments = []
+                        current_segment = ""
+                        current_segment_size = 0
+                        segment_counter = 0
+                        max_segment_size = MAX_SEGMENT_SIZE  # 16KB per segment
+                        
+                        # Add checkpoint tracking
+                        last_checkpoint_time = time.time()
+                        checkpoint_counter = 0
                         
                         for chunk in stream:
+                            # Handle potential disconnection by saving state frequently
                             try:
+                                current_time = time.time()
+                                chunk_count += 1
+                                
+                                # Update session cache with current progress
+                                if session_id in session_cache:
+                                    session_cache[session_id]['last_updated'] = current_time
+                                    session_cache[session_id]['chunk_count'] = chunk_count
+                                
+                                # More frequent keepalive messages (every STREAM_CHUNK_SIZE chunks)
+                                if chunk_count % STREAM_CHUNK_SIZE == 0:
+                                    yield format_stream_event("keepalive", {
+                                        "timestamp": current_time,
+                                        "session_id": session_id,
+                                        "chunk_count": chunk_count
+                                    })
+                                
                                 # Handle thinking updates
                                 if hasattr(chunk, "thinking") and chunk.thinking:
                                     thinking_data = {
                                         "type": "thinking_update",
-                                        "chunk_id": message_id,
+                                        "chunk_id": f"{message_id}_{chunk_count}",
                                         "thinking": {
                                             "content": chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
                                         }
@@ -606,22 +719,145 @@ def process_stream():
                                 
                                 # Handle content block deltas (the actual generated text)
                                 if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
-                                    content_data = {
-                                        "type": "content_block_delta",
-                                        "chunk_id": message_id,
-                                        "delta": {
-                                            "text": chunk.delta.text
+                                    delta_text = chunk.delta.text
+                                    generated_text += delta_text
+                                    
+                                    # Update session cache with generated text
+                                    if session_id in session_cache:
+                                        session_cache[session_id]['generated_text'] = generated_text
+                                    
+                                    # Check if we need to create a checkpoint (every 2 minutes)
+                                    if current_time - last_checkpoint_time > CHECKPOINT_INTERVAL:
+                                        checkpoint_id = f"cp_{session_id}_{checkpoint_counter}"
+                                        checkpoint_counter += 1
+                                        last_checkpoint_time = current_time
+                                        
+                                        # Store checkpoint in the session cache
+                                        session_cache[session_id]["checkpoints"] = session_cache[session_id].get("checkpoints", {})
+                                        session_cache[session_id]["checkpoints"][checkpoint_id] = {
+                                            "html_so_far": generated_text,
+                                            "chunk_id": f"{message_id}_{chunk_count}",
+                                            "timestamp": current_time,
+                                            "chunk_count": chunk_count
                                         }
-                                    }
-                                    generated_text += chunk.delta.text
-                                    yield format_stream_event("content", content_data)
+                                        
+                                        # Send a checkpoint event
+                                        yield format_stream_event("status", {
+                                            "type": "checkpoint",
+                                            "checkpoint_id": checkpoint_id,
+                                            "timestamp": current_time,
+                                            "chunk_id": f"{message_id}_{chunk_count}",
+                                            "chunk_count": chunk_count,
+                                            "message": "Progress checkpoint created"
+                                        })
+                                    
+                                    # Build up the current segment
+                                    current_segment += delta_text
+                                    current_segment_size += len(delta_text)
+                                    
+                                    # Check if we should close and send this segment
+                                    # We send segments when they reach max size or contain complete HTML tags
+                                    if (current_segment_size >= max_segment_size or 
+                                        (current_segment_size > 256 and  # Reduced from 512 bytes to 256 bytes
+                                         (delta_text.endswith('</div>') or 
+                                          delta_text.endswith('</section>') or
+                                          delta_text.endswith('</p>') or
+                                          delta_text.endswith('</table>') or
+                                          delta_text.endswith('</li>') or
+                                          delta_text.endswith('</h1>') or
+                                          delta_text.endswith('</h2>') or
+                                          delta_text.endswith('</h3>') or
+                                          delta_text.endswith('</html>')))):
+                                        
+                                        # Store this segment
+                                        html_segments.append(current_segment)
+                                        segment_counter += 1
+                                        
+                                        # Update session cache with segments
+                                        if session_id in session_cache:
+                                            session_cache[session_id]['html_segments'] = html_segments.copy()
+                                        
+                                        # Send segment to client
+                                        content_data = {
+                                            "type": "content_block_delta",
+                                            "chunk_id": f"{message_id}_{chunk_count}",
+                                            "delta": {
+                                                "text": current_segment
+                                            },
+                                            "segment": segment_counter,
+                                            "session_id": session_id,
+                                            "chunk_count": chunk_count
+                                        }
+                                        yield format_stream_event("content", content_data)
+                                        
+                                        # Send a keepalive after every segment to maintain connection
+                                        yield format_stream_event("keepalive", {
+                                            "timestamp": time.time(),
+                                            "session_id": session_id,
+                                            "chunk_count": chunk_count,
+                                            "segment": segment_counter
+                                        })
+                                        
+                                        # Reset for next segment
+                                        current_segment = ""
+                                        current_segment_size = 0
+                                        
+                                        # Add a short sleep to let the browser process
+                                        if segment_counter % 3 == 0:  # Reduced from 5 to 3
+                                            time.sleep(0.05)
+                                    
+                                    # For smaller updates, send frequently to maintain connection
+                                    # Send even small updates every 2 chunks (reduced from 5)
+                                    elif chunk_count % 2 == 0 and current_segment:
+                                        content_data = {
+                                            "type": "content_block_delta",
+                                            "chunk_id": f"{message_id}_{chunk_count}",
+                                            "delta": {
+                                                "text": current_segment
+                                            },
+                                            "partial": True,
+                                            "session_id": session_id,
+                                            "chunk_count": chunk_count
+                                        }
+                                        yield format_stream_event("content", content_data)
+                                
                             except (ConnectionError, BrokenPipeError) as e:
-                                app.logger.error(f"Client disconnected: {str(e)}")
-                                # Exit the generator if the client disconnects
-                                return
+                                app.logger.error(f"Client disconnected during streaming: {str(e)}")
+                                # Save the current state for potential reconnection
+                                app.logger.warning(f"Saving state at chunk {chunk_count} for session {session_id}")
+                                
+                                # Make sure session cache is updated before breaking
+                                if session_id in session_cache:
+                                    session_cache[session_id]['generated_text'] = generated_text
+                                    session_cache[session_id]['html_segments'] = html_segments.copy()
+                                    session_cache[session_id]['chunk_count'] = chunk_count
+                                break
                         
-                        # Stream completed successfully, break out of retry loop
-                        break
+                        # If we have any remaining segment, send it
+                        if current_segment:
+                            html_segments.append(current_segment)
+                            segment_counter += 1
+                            content_data = {
+                                "type": "content_block_delta",
+                                "chunk_id": f"{message_id}_{chunk_count}",
+                                "delta": {
+                                    "text": current_segment
+                                },
+                                "segment": segment_counter,
+                                "session_id": session_id,
+                                "chunk_count": chunk_count
+                            }
+                            yield format_stream_event("content", content_data)
+                        
+                        # If we completed the stream successfully and have content
+                        if len(generated_text) > 0:
+                            # Stream completed successfully, break out of retry loop
+                            break
+                        else:
+                            # If we broke out of the loop due to connection issue but have partial results
+                            # Log the state for reconnection
+                            app.logger.warning(f"Partial completion for session {session_id}, chunk count: {chunk_count}")
+                            # Don't break here, let it retry if needed
                 
                 except Exception as e:
                     error_str = str(e)
@@ -637,21 +873,37 @@ def process_stream():
                             if isinstance(error_details, dict) and error_details.get('code') == 529:
                                 if retry_count < max_retries:
                                     retry_count += 1
-                                    wait_time = backoff_time
-                                    backoff_time *= 2  # Exponential backoff
                                     
-                                    app.logger.warning(f"Anthropic API overloaded. Retry {retry_count}/{max_retries} after {wait_time}s")
+                                    # Calculate backoff with jitter to prevent thundering herd
+                                    jitter = random.uniform(0.8, 1.2)
+                                    wait_time = min(backoff_time * jitter, MAX_BACKOFF_DELAY)
+                                    backoff_time = min(backoff_time * BACKOFF_FACTOR, MAX_BACKOFF_DELAY)
+                                    
+                                    app.logger.warning(f"Anthropic API overloaded. Retry {retry_count}/{max_retries} after {wait_time:.2f}s")
                                     yield format_stream_event("status", {
                                         "type": "status", 
-                                        "message": f"Anthropic API temporarily overloaded. Retrying in {wait_time}s..."
+                                        "message": f"Anthropic API temporarily overloaded. Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...",
+                                        "session_id": session_id,
+                                        "retry": retry_count,
+                                        "max_retries": max_retries
                                     })
                                     
                                     time.sleep(wait_time)
                                     continue  # Try again
+                                else:
+                                    app.logger.error(f"Max retries ({max_retries}) exceeded for API overload")
+                                    yield format_stream_event("error", {
+                                        "type": "error",
+                                        "error": "Maximum retry attempts exceeded. Please try again later.",
+                                        "details": "The AI service is currently experiencing high load. Your request could not be completed after multiple attempts.",
+                                        "code": 529,
+                                        "session_id": session_id
+                                    })
+                                    return
                         except Exception as json_err:
                             app.logger.error(f"Failed to parse error response: {str(json_err)}")
                     
-                    # If we reach here, it's either not a 529 error or we've exhausted retries
+                    # For other errors that are not 529
                     app.logger.error(f"Error in stream_generator: {error_str}")
                     if error_details:
                         app.logger.error(f"Error details: {error_details}")
@@ -660,7 +912,8 @@ def process_stream():
                     yield format_stream_event("error", {
                         "type": "error",
                         "error": error_str,
-                        "details": str(error_details)
+                        "details": str(error_details),
+                        "session_id": session_id
                     })
                     return
             
@@ -687,45 +940,178 @@ def process_stream():
                         "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
                     }
                 
+                # Mark this session as complete in the cache
+                if session_id in session_cache:
+                    session_cache[session_id]['complete'] = True
+                    session_cache[session_id]['usage'] = usage_data
+                
                 complete_data = {
                     "type": "message_complete",
                     "message_id": message_id,
-                    "chunk_id": message_id,
+                    "chunk_id": f"{message_id}_{chunk_count}",
                     "usage": usage_data,
-                    "html": generated_text
+                    "html": generated_text,
+                    "session_id": session_id,
+                    "final_chunk_count": chunk_count,
+                    "segment_count": segment_counter
                 }
                 yield format_stream_event("content", complete_data)
-                yield format_stream_event("stream_end", {"message": "Stream complete"})
+                yield format_stream_event("stream_end", {"message": "Stream complete", "session_id": session_id})
             except (ConnectionError, BrokenPipeError) as e:
                 app.logger.error(f"Client disconnected during completion: {str(e)}")
-                return
         except Exception as e:
-            # Log the exception
-            app.logger.error(f"Error in stream_generator: {str(e)}")
-            app.logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            # Try to yield an error event, but catch connection errors
-            try:
-                error_data = {
-                    "type": "error",
-                    "error": str(e),
-                    "traceback": traceback.format_exc()
-                }
-                yield format_stream_event("error", error_data)
-            except (ConnectionError, BrokenPipeError):
-                # Client already disconnected, just return
-                app.logger.error("Client disconnected while sending error")
-                return
+            app.logger.error(f"Unexpected error in stream generator: {str(e)}")
+            # Include stack trace for better debugging
+            app.logger.error(traceback.format_exc())
+            yield format_stream_event("error", {
+                "type": "error",
+                "error": str(e),
+                "details": traceback.format_exc(),
+                "session_id": session_id
+            })
     
-    # Return the streaming response with proper headers
-    response = Response(
-        stream_with_context(stream_generator()),
-        mimetype='text/event-stream'
-    )
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['X-Accel-Buffering'] = 'no'  # Disable buffering in Nginx
+    # Generator for resuming from cache
+    def resume_from_cache(session_id, last_chunk_id, api_key):
+        try:
+            # Get cached data
+            cached_data = session_cache[session_id]
+            app.logger.info(f"Resuming from cache for session {session_id}")
+            
+            # Start with a stream_start event
+            yield format_stream_event("stream_start", {
+                "message": "Resuming stream",
+                "session_id": session_id,
+                "is_resumed": True
+            })
+            
+            # Extract segment number from last_chunk_id
+            last_segment = 0
+            if last_chunk_id and '_' in last_chunk_id:
+                try:
+                    last_segment = int(last_chunk_id.split('_')[1]) // 10  # Approximate segment
+                except ValueError:
+                    pass
+            
+            # Send all cached segments after the last known segment
+            html_segments = cached_data.get('html_segments', [])
+            
+            for i, segment in enumerate(html_segments):
+                segment_num = i + 1
+                if segment_num > last_segment:
+                    content_data = {
+                        "type": "content_block_delta",
+                        "chunk_id": f"{session_id}_{segment_num * 10}",
+                        "delta": {
+                            "text": segment
+                        },
+                        "segment": segment_num,
+                        "session_id": session_id,
+                        "chunk_count": segment_num * 10,
+                        "is_cached": True
+                    }
+                    yield format_stream_event("content", content_data)
+                    time.sleep(0.1)  # Short delay between segments
+            
+            # If generation was complete, send the completion event
+            if cached_data.get('complete', False):
+                app.logger.info(f"Sending cached completion for session {session_id}")
+                
+                complete_data = {
+                    "type": "message_complete",
+                    "message_id": session_id,
+                    "chunk_id": f"{session_id}_{len(html_segments) * 10}",
+                    "usage": cached_data.get('usage', {}),
+                    "html": cached_data.get('generated_text', ''),
+                    "session_id": session_id,
+                    "final_chunk_count": len(html_segments) * 10,
+                    "segment_count": len(html_segments),
+                    "is_cached": True
+                }
+                yield format_stream_event("content", complete_data)
+                yield format_stream_event("stream_end", {
+                    "message": "Stream complete (from cache)",
+                    "session_id": session_id
+                })
+                return
+            
+            # If generation was not complete, continue with the regular generator
+            # Create a client and continue where we left off
+            client = create_anthropic_client(api_key)
+            
+            # Continue with a new request
+            app.logger.info(f"Continuing generation for session {session_id}")
+            
+            # Continue by creating a new generator
+            content = cached_data.get('user_content', '')
+            format_prompt = cached_data.get('format_prompt', '')
+            max_tokens = cached_data.get('max_tokens', DEFAULT_MAX_TOKENS)
+            temperature = cached_data.get('temperature', 0.5)
+            
+            # Add a message that we're continuing generation
+            yield format_stream_event("status", {
+                "type": "status",
+                "message": "Continuing generation...",
+                "session_id": session_id
+            })
+            
+            # Continue with new generator - simplified to avoid nesting too deep
+            # In production, this should be refactored to avoid code duplication
+            yield from stream_generator()
+            
+        except Exception as e:
+            app.logger.error(f"Error resuming from cache: {str(e)}")
+            yield format_stream_event("error", {
+                "type": "error",
+                "error": f"Failed to resume: {str(e)}",
+                "session_id": session_id
+            })
+            
+            # Start a new generator from scratch as fallback
+            yield format_stream_event("status", {
+                "type": "status",
+                "message": "Failed to resume. Starting new generation.",
+                "session_id": session_id
+            })
+            
+            # Re-initialize session
+            session_cache[session_id] = {
+                'created_at': time.time(),
+                'last_updated': time.time(),
+                'html_segments': [],
+                'generated_text': '',
+                'chunk_count': 0
+            }
+            
+            yield from stream_generator()
+    
+    # Return streaming response
+    response = Response(stream_with_context(stream_generator()), 
+                         content_type='text/event-stream')
+    response.headers['X-Accel-Buffering'] = 'no'  # Disable nginx buffering
+    response.headers['Cache-Control'] = 'no-cache, no-transform'
     response.headers['Connection'] = 'keep-alive'
+    response.headers['Keep-Alive'] = 'timeout=3600, max=2000'  # 60 minutes timeout (increased from 30)
+    response.headers['X-Accel-Limit-Rate'] = '0'  # Disable rate limiting
     return response
+
+# Clean up expired sessions from cache
+@app.before_request
+def cleanup_session_cache():
+    current_time = time.time()
+    expired_sessions = []
+    
+    for session_id, session_data in session_cache.items():
+        # Clean up sessions older than SESSION_CACHE_EXPIRY
+        if current_time - session_data.get('created_at', 0) > SESSION_CACHE_EXPIRY:
+            expired_sessions.append(session_id)
+    
+    # Remove expired sessions
+    for session_id in expired_sessions:
+        del session_cache[session_id]
+        
+    # Log cleanup if sessions were removed
+    if expired_sessions:
+        app.logger.info(f"Cleaned up {len(expired_sessions)} expired sessions from cache")
 
 # Add a simple test endpoint
 @app.route('/api/test', methods=['GET', 'POST'])
@@ -937,41 +1323,57 @@ def test_generate():
         }), 200  # Return 200 for better client handling
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run the Claude 3.7 File Visualizer server')
-    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5009)),
-                        help='Port to run the server on')
-    parser.add_argument('--host', type=str, default='0.0.0.0',
-                        help='Host to run the server on')
-    parser.add_argument('--debug', action='store_true',
-                        help='Run in debug mode')
-    parser.add_argument('--no-reload', action='store_true',
-                        help='Disable auto-reloading on code changes')
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Start the File Visualizer server")
     
+    # Add command line arguments
+    parser.add_argument("--port", type=int, default=5009, help="Port to run the server on (default: 5009)")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the server on (default: 0.0.0.0)")
+    parser.add_argument("--debug", action="store_true", help="Run in debug mode")
+    parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload")
+    
+    # Parse arguments
     args = parser.parse_args()
     
+    # Configure logging for better debugging
+    import logging
+    logging.basicConfig(
+        level=logging.INFO if not args.debug else logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Configure longer timeouts to handle large content
+    from werkzeug.serving import run_simple
+    
+    # Extended timeout settings
+    app.config['TIMEOUT'] = 900  # 15 minutes timeout for requests 
+    
+    # Find an available port if the specified one is in use
     port = args.port
-    host = args.host
-    debug_mode = args.debug
-    use_reloader = not args.no_reload
+    while True:
+        try:
+            # Check if the port is available
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((args.host, port))
+                break
+        except OSError:
+            # Port is in use, try the next one
+            print(f"Port {port} is in use, trying {port + 1}...")
+            port += 1
     
-    # Check if port is already in use
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex(('localhost', port))
-    sock.close()
+    print(f"\n==== File Visualizer running at http://{args.host if args.host != '0.0.0.0' else 'localhost'}:{port} ====\n")
+    print(f"Visit http://localhost:{port} in your browser to use the application.")
     
-    if result == 0:
-        print(f"Port {port} is in use. Try using:")
-        print(f"  python server.py --port={port+1}")
-        print(f"  # or")
-        print(f"  PORT={port+1} python server.py")
-        print(f"  # or")
-        print(f"  lsof -i :{port} | awk 'NR>1 {{print $2}}' | xargs kill -9 # to kill process using port {port}")
-        sys.exit(1)
-    
-    print("Claude 3.7 File Visualizer starting...")
-    print(f"Server running at http://localhost:{port}" + (" with debug mode enabled" if debug_mode else ""))
-    
-    app.run(host=host, port=port, debug=debug_mode, use_reloader=use_reloader)
+    # Run with enhanced settings for larger content
+    run_simple(
+        args.host, 
+        port, 
+        app, 
+        use_reloader=not args.no_reload,
+        use_debugger=args.debug,
+        threaded=True,
+        passthrough_errors=args.debug
+    )
 
 # Important: Export the Flask app for Vercel
 app

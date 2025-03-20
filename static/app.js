@@ -9,6 +9,12 @@ const API_URL = window.location.origin;
 console.log("API_URL set to:", API_URL);
 const API_KEY_STORAGE_KEY = 'claude_visualizer_api_key';
 
+// Constants for stream handling
+const MAX_RECONNECT_ATTEMPTS = 10; // Increased from default
+const RECONNECT_DELAY = 1000; // 1 second
+const MAX_SEGMENT_SIZE = 16384; // 16KB to match server setting
+const MAX_HTML_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB before using incremental rendering
+
 // Elements
 const elements = {
     // Theme
@@ -968,7 +974,6 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
     let generatedContent = '';
     let sessionId = '';
     let reconnectAttempts = 0;
-    const MAX_RECONNECT_ATTEMPTS = 5;
     
     try {
         // Show streaming status
@@ -1031,7 +1036,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                         // Increment reconnect attempts and try again
                         reconnectAttempts++;
                         if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-                            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a second before reconnecting
+                            await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
                             return await processStreamChunk(true);
                         } else {
                             throw new Error('Maximum reconnection attempts reached. Please try again later.');
@@ -1181,7 +1186,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 if (error.message.includes('FUNCTION_INVOCATION_TIMEOUT') && reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                     console.log('Reconnecting due to timeout...');
                     reconnectAttempts++;
-                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a second before reconnecting
+                    await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
                     return await processStreamChunk(true, lastChunkId);
                 }
                 
@@ -1203,27 +1208,76 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
 }
 
 function updateHtmlPreview(html) {
-    // Update the HTML output area as content streams in
-    if (elements.htmlOutput) {
-        elements.htmlOutput.textContent = html;
-        
-        // Highlight syntax (if Prism is available)
-        if (typeof Prism !== 'undefined') {
-            elements.htmlOutput.innerHTML = Prism.highlight(html, Prism.languages.markup, 'html');
-        }
-    }
+    if (!html) return;
     
-    // Also update the preview if available
-    if (elements.previewIframe) {
-        try {
-            const iframe = elements.previewIframe;
-            const doc = iframe.contentDocument || iframe.contentWindow.document;
-            doc.open();
-            doc.write(html);
-            doc.close();
-        } catch (e) {
-            console.warn('Error updating preview:', e);
+    try {
+        // For large content, use incremental iframe updates
+        const htmlLength = html.length;
+        
+        if (htmlLength > MAX_HTML_BUFFER_SIZE) {
+            // Only update the preview iframe in incremental mode for large content
+            console.log(`Large HTML detected (${formatFileSize(htmlLength)}), using incremental iframe update`);
+            
+            // Check if iframe exists
+            const iframe = document.getElementById('preview-iframe');
+            if (!iframe) {
+                console.error('Preview iframe not found');
+                return;
+            }
+            
+            // For very large content, we'll inject incrementally using document.write
+            if (!iframe.hasAttribute('data-initialized')) {
+                // Initialize the iframe with base HTML structure
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                iframeDoc.open();
+                iframeDoc.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>');
+                iframeDoc.close();
+                iframe.setAttribute('data-initialized', 'true');
+                iframe.setAttribute('data-content-length', '0');
+            }
+            
+            // Get the previous content length
+            const prevLength = parseInt(iframe.getAttribute('data-content-length') || '0');
+            
+            // Only inject the new content
+            if (htmlLength > prevLength) {
+                const newContent = html.substring(prevLength);
+                
+                try {
+                    // Append to body instead of rewriting everything
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    
+                    // Create temporary div to parse HTML
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = newContent;
+                    
+                    // Extract new nodes and append them to iframe body
+                    Array.from(tempDiv.childNodes).forEach(node => {
+                        iframeDoc.body.appendChild(iframeDoc.importNode(node, true));
+                    });
+                    
+                    // Update the stored content length
+                    iframe.setAttribute('data-content-length', htmlLength.toString());
+                } catch (innerError) {
+                    console.error('Error appending to iframe:', innerError);
+                }
+            }
+        } else {
+            // For smaller content, use normal update method
+            elements.htmlOutput.value = html;
+            
+            // Update the preview iframe
+            const iframe = document.getElementById('preview-iframe');
+            if (iframe) {
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                iframeDoc.open();
+                iframeDoc.write(html);
+                iframeDoc.close();
+            }
         }
+    } catch (error) {
+        console.error('Error updating HTML preview:', error);
+        showToast('Error updating preview', 'error');
     }
 }
 
@@ -1284,7 +1338,13 @@ function formatTime(seconds) {
 
 async function processWithStreaming(data) {
     try {
-        const response = await fetch(`${API_URL}/api/process`, {
+        // Variables for streaming
+        let chunks = 0;
+        let lastChunkTime = Date.now();
+        let receivedHtml = '';
+        
+        // Get the response
+        const response = await fetch(`${API_URL}/api/process-stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -1292,182 +1352,124 @@ async function processWithStreaming(data) {
             body: JSON.stringify(data)
         });
         
+        // Check for errors
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(errorText);
+            throw new Error(`Server returned ${response.status}: ${await response.text()}`);
         }
         
+        // Get a reader from the response body stream
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        let decoder = new TextDecoder();
         
+        // Flag for large content handling
+        let isLargeContent = false;
+        
+        // Process the stream
         while (true) {
             const { value, done } = await reader.read();
             
+            // If the stream is done, break the loop
             if (done) {
+                console.log('Stream complete');
                 break;
             }
             
-            buffer += decoder.decode(value, { stream: true });
+            // Update last chunk time
+            lastChunkTime = Date.now();
+            chunks++;
             
-            const events = buffer.split('\n\n');
-            buffer = events.pop() || '';
+            // Output every 10 chunks for debugging
+            if (chunks % 10 === 0) {
+                console.log(`Processed ${chunks} chunks so far`);
+            }
             
-            for (const event of events) {
-                if (event.startsWith('data: ')) {
+            // Decode the chunk
+            const chunkText = decoder.decode(value, { stream: true });
+            
+            // Split the chunk into lines
+            const lines = chunkText.split('\n');
+            
+            // Process each line
+            for (const line of lines) {
+                // Skip empty lines
+                if (!line.trim()) continue;
+                
+                // Process data lines
+                if (line.startsWith('data: ')) {
                     try {
-                        const jsonData = JSON.parse(event.slice(6));
-                        handleStreamEvent(jsonData);
-                    } catch (e) {
-                        console.error('Failed to parse event:', e);
-                        // If we can't parse an event, make sure the UI is still updated
-                        stopProcessingAnimation();
+                        // Parse the JSON data
+                        const jsonData = JSON.parse(line.substring(6));
+                        
+                        // Handle different event types
+                        if (jsonData.type === 'content_block_delta' && jsonData.delta && jsonData.delta.text) {
+                            // Handle content increments
+                            receivedHtml += jsonData.delta.text;
+                            
+                            // If content is becoming large, switch to incremental mode
+                            if (receivedHtml.length > MAX_HTML_BUFFER_SIZE && !isLargeContent) {
+                                console.log('Switching to large content mode');
+                                isLargeContent = true;
+                            }
+                            
+                            // Update the preview (will use incremental mode if needed)
+                            updateHtmlPreview(receivedHtml);
+                            
+                            // Show progress indicator
+                            if (jsonData.segment) {
+                                setProcessingText(`Processing segment ${jsonData.segment}... (${formatFileSize(receivedHtml.length)} generated)`);
+                            }
+                        } else if (jsonData.type === 'status') {
+                            // Handle status updates
+                            setProcessingText(jsonData.message || 'Processing...');
+                        } else if (jsonData.type === 'message_complete') {
+                            // Update UI
+                            if (jsonData.usage) {
+                                elements.inputTokens.textContent = jsonData.usage.input_tokens.toLocaleString();
+                                elements.outputTokens.textContent = jsonData.usage.output_tokens.toLocaleString();
+                                if (jsonData.usage.thinking_tokens) {
+                                    elements.thinkingTokens.textContent = jsonData.usage.thinking_tokens.toLocaleString();
+                                }
+                                
+                                // Calculate cost if available
+                                const totalCost = jsonData.usage.total_cost || 
+                                    ((jsonData.usage.input_tokens + jsonData.usage.output_tokens) / 1000000 * 3.0);
+                                elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                                
+                                // Show time if available
+                                if (jsonData.usage.time_elapsed) {
+                                    elements.elapsedTime.textContent = formatTime(jsonData.usage.time_elapsed);
+                                }
+                            }
+                            
+                            // Update with final content if provided
+                            if (jsonData.html) {
+                                receivedHtml = jsonData.html;
+                                updateHtmlPreview(receivedHtml);
+                            }
+                            
+                            console.log('Generation complete');
+                            setTimeout(() => {
+                                stopProcessingAnimation();
+                                showToast('Generation complete!', 'success');
+                            }, 500);
+                        }
+                    } catch (error) {
+                        console.error('Error parsing SSE data:', error, line);
                     }
                 }
             }
         }
         
-        // Ensure animations are stopped if the stream ends without a completion event
-        if (state.processing) {
-            console.log('Stream ended without completion event, stopping animations');
-            stopProcessingAnimation();
-            resetGenerationUI();
-        }
+        // Ensure the HTML is displayed
+        elements.htmlOutput.value = receivedHtml;
         
+        // Return the generated HTML
+        return receivedHtml;
     } catch (error) {
-        console.error('Streaming error:', error);
-        showToast(`Error: ${error.message}`, 'error');
+        console.error('Error in processWithStreaming:', error);
         stopProcessingAnimation();
-        resetGenerationUI();
-    }
-}
-
-function handleStreamEvent(event) {
-    // Ensure the event has a type property
-    if (!event || !event.type) {
-        console.error('Received event without type:', event);
-        return;
-    }
-    
-    console.log(`Received ${event.type} event:`, event);
-    
-    // Process events based on their type
-    switch (event.type) {
-        case 'start':
-            console.log('Generation started:', event.message);
-            break;
-            
-        case 'delta':
-            // Append delta content to the generated HTML
-            state.generatedHtml += event.content || '';
-            updateHtmlDisplay();
-            break;
-            
-        case 'thinking_update':
-            if (event.thinking && event.thinking.content) {
-                elements.thinkingOutput.textContent = event.thinking.content;
-                elements.thinkingOutput.classList.remove('hidden');
-            }
-            break;
-            
-        case 'status':
-            // Handle status updates (like retry notifications)
-            console.log('Status update:', event.message);
-            // Update the status message in the UI
-            if (elements.statusMessage) {
-                elements.statusMessage.textContent = event.message;
-                elements.statusMessage.classList.remove('hidden');
-            } else {
-                // If no dedicated status element exists, show a toast notification
-                showToast(event.message, 'info');
-            }
-            break;
-            
-        case 'error':
-            console.error('Generation error:', event.error);
-            showToast(`Error: ${event.error}`, 'error');
-            
-            // Show detailed error if available
-            if (event.details) {
-                console.error('Error details:', event.details);
-            }
-            
-            // Stop processing animation on error
-            stopProcessingAnimation();
-            resetGenerationUI();
-            break;
-            
-        case 'message_complete':
-            console.log('Generation complete:', event.usage);
-            
-            // Ensure processing animation stops completely
-            stopProcessingAnimation();
-            
-            // Set completion message with elapsed time
-            if (event.usage && event.usage.time_elapsed) {
-                displayElapsedTime(Math.floor(event.usage.time_elapsed));
-            }
-            
-            // Update usage statistics
-            if (event.usage) {
-                elements.inputTokens.textContent = event.usage.input_tokens.toLocaleString();
-                elements.outputTokens.textContent = event.usage.output_tokens.toLocaleString();
-                elements.thinkingTokens.textContent = event.usage.thinking_tokens.toLocaleString();
-                
-                // Make sure total_cost is available or calculate it
-                const totalCost = event.usage.total_cost || 
-                    ((event.usage.input_tokens + event.usage.output_tokens) / 1000000 * 3.0);
-                elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
-                
-                // Update storage with new usage stats
-                try {
-                    // Get existing stats
-                    const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
-                    
-                    // Update stats
-                    existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
-                    existingStats.totalTokens = (existingStats.totalTokens || 0) + 
-                        (event.usage.input_tokens + event.usage.output_tokens);
-                    existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
-                    
-                    // Save updated stats
-                    localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
-                    
-                    // Update UI if stats container exists
-                    if (document.getElementById('total-runs')) {
-                        document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
-                    }
-                    if (document.getElementById('total-tokens')) {
-                        document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
-                    }
-                    if (document.getElementById('total-cost')) {
-                        document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
-                    }
-                } catch (e) {
-                    console.error('Error updating usage statistics:', e);
-                }
-            }
-            
-            // Finalize HTML display
-            updateHtmlDisplay();
-            
-            // Update preview
-            updatePreview();
-            
-            // Reset UI elements
-            resetGenerationUI(true);
-            
-            // Show completed message
-            showToast('Visualization complete!', 'success');
-            break;
-            
-        case 'deployment_note':
-            // Add deployment note to the generated HTML
-            if (event.content) {
-                state.generatedHtml += event.content;
-                updateHtmlDisplay();
-            }
-            break;
+        showToast(`Error: ${error.message}`, 'error');
+        return null;
     }
 }
 
@@ -1476,7 +1478,7 @@ function updateHtmlDisplay() {
     
     // Escape HTML entities to prevent code execution in the pre tag
     const escapedHtml = escapeHtml(state.generatedHtml);
-    elements.htmlOutput.textContent = state.generatedHtml;
+    elements.htmlOutput.value = state.generatedHtml;
     
     // If Prism.js is available, highlight the code
     if (window.Prism) {

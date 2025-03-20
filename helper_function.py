@@ -4,6 +4,7 @@ import os
 import json
 import requests
 import time
+import uuid
 
 def create_anthropic_client(api_key):
     """Create an Anthropic client with the given API key."""
@@ -182,44 +183,97 @@ class VercelCompatibleClient:
                     # For local environment, use a longer timeout
                     timeout = 30
                 
-                # Make the API request to stream response
-                try:
-                    stream_response = requests.post(
-                        f"{self.client.base_url}/messages",
-                        headers=headers,
-                        json=payload,
-                        stream=True,
-                        timeout=timeout
-                    )
-                    
-                    if stream_response.status_code != 200:
-                        # Try to get error message
-                        try:
-                            error_text = next(stream_response.iter_lines()).decode('utf-8')
-                            if error_text.startswith('data: '):
-                                error_json = json.loads(error_text[6:])
-                                error_msg = error_json.get('error', {}).get('message', error_text)
-                            else:
-                                error_msg = error_text
-                        except Exception:
-                            error_msg = f"HTTP Error {stream_response.status_code}"
+                # Implement retry logic with exponential backoff
+                max_retries = 5
+                retry_count = 0
+                base_delay = 2  # Start with a 2-second delay
+                
+                while retry_count < max_retries:
+                    try:
+                        # Make the API request to stream response
+                        stream_response = requests.post(
+                            f"{self.client.base_url}/messages",
+                            headers=headers,
+                            json=payload,
+                            stream=True,
+                            timeout=timeout
+                        )
                         
-                        raise Exception(f"API request failed: {error_msg}")
-                    
-                    # Return a streaming response wrapper that mimics the Anthropic client
-                    # Add the session_id and is_vercel flags to help with timeout handling
-                    return VercelStreamingResponse(stream_response, self.client, 
-                                                 session_id=session_id,
-                                                 is_vercel=is_vercel)
-                    
-                except requests.exceptions.Timeout:
-                    # If timeout occurs on Vercel, provide information for client reconnection
-                    if is_vercel:
-                        raise Exception(f"Vercel timeout - client should continue with session: {session_id}")
-                    else:
-                        raise Exception(f"Request timed out after {timeout} seconds")
-                except Exception as e:
-                    raise Exception(f"API request failed: {str(e)}")
+                        if stream_response.status_code not in [200, 201]:
+                            error_msg = None
+                            # Handle error responses with retry logic
+                            if stream_response.status_code == 529:  # Overloaded
+                                retry_count += 1
+                                retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                                print(f"API overloaded (529), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                                time.sleep(retry_delay)
+                                continue
+                            elif stream_response.status_code == 500:  # Internal server error
+                                retry_count += 1
+                                retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                                print(f"API internal error (500), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                                time.sleep(retry_delay)
+                                continue
+                            elif stream_response.status_code == 408:  # Timeout
+                                retry_count += 1
+                                retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                                print(f"API timeout (408), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                                time.sleep(retry_delay)
+                                continue
+                            
+                            # If not a retriable error or we couldn't extract an error message
+                            try:
+                                error_text = next(stream_response.iter_lines()).decode('utf-8')
+                                if error_text.startswith('data: '):
+                                    error_json = json.loads(error_text[6:])
+                                    error_msg = error_json.get('error', {}).get('message', error_text)
+                                else:
+                                    error_msg = error_text
+                            except Exception:
+                                error_msg = f"HTTP Error {stream_response.status_code}"
+                            
+                            raise Exception(f"API request failed: {error_msg}")
+                        
+                        # Return a streaming response wrapper that mimics the Anthropic client
+                        # Add the session_id and is_vercel flags to help with timeout handling
+                        return VercelStreamingResponse(stream_response, self.client, 
+                                                     session_id=session_id,
+                                                     is_vercel=is_vercel)
+                        
+                    except requests.exceptions.Timeout:
+                        # If timeout occurs on Vercel, provide information for client reconnection
+                        if is_vercel:
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                raise Exception(f"Vercel timeout after {max_retries} retries - client should continue with session: {session_id}")
+                            retry_delay = base_delay * (2 ** retry_count)
+                            print(f"Vercel timeout, retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                raise Exception(f"Request timed out after {max_retries} retries")
+                            retry_delay = base_delay * (2 ** retry_count)
+                            print(f"Request timed out, retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                            time.sleep(retry_delay)
+                            continue
+                            
+                    except Exception as e:
+                        # For network/connection errors, retry
+                        if "connection" in str(e).lower() or "timeout" in str(e).lower():
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                raise Exception(f"Connection error after {max_retries} retries: {str(e)}")
+                            retry_delay = base_delay * (2 ** retry_count)
+                            print(f"Connection error, retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            raise Exception(f"API request failed: {str(e)}")
+                
+                # If we've exhausted all retries
+                raise Exception(f"API request failed after {max_retries} retries")
     
     # Regular messages namespace
     class _MessagesNamespace:
@@ -228,7 +282,8 @@ class VercelCompatibleClient:
         
         def create(self, model, max_tokens, temperature, system, messages, thinking=None, betas=None, beta=None):
             """
-            Create a message with the Anthropic API directly.
+            Create a message with the Anthropic API directly with retry logic for 529 overloaded errors.
+            Implements exponential backoff for retries.
             """
             # Convert messages to API format
             formatted_messages = []
@@ -289,178 +344,220 @@ class VercelCompatibleClient:
             elif betas and isinstance(betas, list) and len(betas) > 0:
                 headers["anthropic-beta"] = ",".join(betas)
             
-            # Retry logic with exponential backoff
+            # Implement retry logic with exponential backoff
             max_retries = 5
             retry_count = 0
-            base_delay = 1  # Starting delay in seconds
+            base_delay = 2  # Start with a 2-second delay
             
-            while True:
+            while retry_count < max_retries:
                 try:
-                    print(f"Making direct API request to Anthropic (attempt {retry_count + 1}/{max_retries + 1})...")
+                    # Make the API request with a longer timeout for large requests
                     response = requests.post(
-                        "https://api.anthropic.com/v1/messages",
-                        json=payload,
+                        f"{self.client.base_url}/messages",
                         headers=headers,
-                        timeout=600  # Increased timeout for large responses
+                        json=payload,
+                        timeout=600  # 10 minutes timeout for large requests
                     )
                     
-                    # Check for overloaded error (529)
-                    if response.status_code == 529:
+                    # Check if we received a successful response
+                    if response.status_code == 200:
+                        # Parse the result
+                        result = response.json()
+                        
+                        # Return a response wrapper that mimics the Anthropic client
+                        return VercelMessageResponse(result)
+                        
+                    # Handle specific error codes with retries
+                    elif response.status_code == 529:  # Overloaded
                         retry_count += 1
-                        if retry_count <= max_retries:
-                            delay = base_delay * (2 ** (retry_count - 1))  # Exponential backoff
-                            print(f"Anthropic API overloaded (529). Retrying in {delay} seconds... (Attempt {retry_count}/{max_retries})")
-                            time.sleep(delay)
-                            continue
+                        retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                        print(f"API overloaded (529), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                        
+                    elif response.status_code == 500:  # Internal server error
+                        retry_count += 1
+                        retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                        print(f"API internal error (500), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                        
+                    elif response.status_code == 408:  # Timeout
+                        retry_count += 1
+                        retry_delay = base_delay * (2 ** retry_count)  # Exponential backoff
+                        print(f"API timeout (408), retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
                     
-                    # Check for other errors
-                    if response.status_code != 200:
-                        error_data = response.json() if response.text else {"error": "Unknown error"}
-                        error_message = f"Request error: API error {response.status_code}: {error_data}"
-                        print(f"Error in message creation: {error_message}")
-                        raise Exception(f"Message creation failed: {error_message}")
-                    
-                    # Parse the response
-                    result = response.json()
-                    
-                    # Return a formatted response object
-                    return VercelMessageResponse(result)
-                    
-                except requests.exceptions.RequestException as e:
-                    # Handle network errors with retry
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        delay = base_delay * (2 ** (retry_count - 1))
-                        print(f"Network error: {str(e)}. Retrying in {delay} seconds... (Attempt {retry_count}/{max_retries})")
-                        time.sleep(delay)
                     else:
-                        print(f"Max retries exceeded for network error: {str(e)}")
-                        raise Exception(f"Message creation failed after {max_retries} retries: {str(e)}")
+                        # Try to get detailed error message
+                        try:
+                            error_json = response.json()
+                            error_msg = error_json.get('error', {}).get('message', f"HTTP {response.status_code}")
+                        except Exception:
+                            error_msg = f"HTTP Error {response.status_code}: {response.text[:100]}"
+                        
+                        raise Exception(f"API request failed: {error_msg}")
+                        
+                except requests.exceptions.Timeout:
+                    retry_count += 1
+                    retry_delay = base_delay * (2 ** retry_count)
+                    print(f"Request timed out, retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                    time.sleep(retry_delay)
+                    continue
+                    
                 except Exception as e:
-                    print(f"Error in message creation: {str(e)}")
-                    raise Exception(f"Message creation failed: {str(e)}")
+                    # For other exceptions, retry a few times
+                    if "connection" in str(e).lower() or "timeout" in str(e).lower():
+                        retry_count += 1
+                        retry_delay = base_delay * (2 ** retry_count)
+                        print(f"Connection error, retrying in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f"API request failed: {str(e)}")
+            
+            # If we've exhausted all retries
+            raise Exception(f"API request failed after {max_retries} retries")
 
 # Wrapper for the streaming response
 class VercelStreamingResponse:
     def __init__(self, stream_response, client, session_id=None, is_vercel=False):
         self.stream_response = stream_response
         self.client = client
-        self.usage = None
-        self.session_id = session_id
         self.is_vercel = is_vercel
-        self.chunk_buffer = []  # Buffer to store chunks for reconnection
-        
+        self.session_id = session_id or str(uuid.uuid4())
+        self.chunk_count = 0
+        self.buffer = []
+        self.buffer_limit = 10  # Maximum number of chunks to buffer
+        self.last_error = None
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stream_response.close()
-    
+        pass
+
     def __iter__(self):
-        """Iterator that parses SSE format and yields message chunks"""
-        buffer = ""
-        input_tokens = 0
-        output_tokens = 0
-        thinking_tokens = 0
-        chunk_count = 0
+        # Keep track of the total output size
+        total_output_text = 0
+        chunk_batch = []  # To batch small chunks for efficiency
         
         try:
-            for line in self.stream_response.iter_lines():
-                if not line:
-                    continue
-                    
-                line_text = line.decode('utf-8')
-                
-                # Skip lines that don't start with 'data: '
-                if not line_text.startswith('data: '):
-                    continue
-                    
-                # Extract the JSON data
-                data = line_text[6:]  # Remove 'data: ' prefix
-                
-                # Check for the [DONE] message
-                if data == "[DONE]":
-                    # Create usage object at the end
-                    self.usage = self._UsageInfo(input_tokens, output_tokens, thinking_tokens)
-                    break
-                
+            # Track chunk count for reconnection support
+            self.chunk_count = 0
+            
+            # Stream begins event
+            yield self._ChunkObject("stream_start")
+            
+            for chunk in self.stream_response:
                 try:
-                    # Parse the chunk JSON
-                    chunk = json.loads(data)
-                    chunk_count += 1
+                    self.chunk_count += 1
                     
-                    # Extract any usage information
-                    if 'usage' in chunk:
-                        if 'input_tokens' in chunk['usage']:
-                            input_tokens = chunk['usage']['input_tokens']
-                        if 'output_tokens' in chunk['usage']:
-                            output_tokens = chunk['usage']['output_tokens']
-                        if 'thinking_tokens' in chunk['usage'] or 'thinking' in chunk['usage']:
-                            thinking_tokens = chunk['usage'].get('thinking_tokens', chunk['usage'].get('thinking', 0))
-                    
-                    # For Vercel with potential timeouts, save chunks for client reconnection
-                    if self.is_vercel:
-                        # Store the chunk in our buffer (limiting to last 100 chunks to avoid memory issues)
-                        if len(self.chunk_buffer) >= 100:
-                            self.chunk_buffer.pop(0)  # Remove oldest chunk
-                        self.chunk_buffer.append(chunk)
-                    
-                    # Create a compatible chunk object based on the event type
-                    if chunk.get('type') == 'message_start':
-                        yield self._ChunkObject('message_start')
-                    elif chunk.get('type') == 'content_block_start':
-                        yield self._ChunkObject('content_block_start')
-                    elif chunk.get('type') == 'content_block_delta':
-                        if 'delta' in chunk and 'text' in chunk['delta']:
-                            yield self._ContentDeltaChunk(chunk['delta']['text'])
-                    elif chunk.get('type') == 'thinking_start':
-                        yield self._ChunkObject('thinking_start')
-                    elif chunk.get('type') == 'thinking_update':
-                        if 'thinking' in chunk and 'content' in chunk['thinking']:
-                            thinking_obj = self._ThinkingObject(chunk['thinking']['content'])
-                            yield self._ThinkingUpdateChunk(thinking_obj)
-                    elif chunk.get('type') == 'thinking_end':
-                        yield self._ChunkObject('thinking_end')
-                    elif chunk.get('type') == 'message_delta':
-                        content = ""
-                        if 'delta' in chunk and 'content' in chunk['delta']:
-                            content = chunk['delta']['content']
-                        elif 'delta' in chunk and 'text' in chunk['delta']:
-                            content = chunk['delta']['text']
+                    # Process each chunk based on its type
+                    if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
+                        # We have content delta
+                        delta_text = chunk.delta.text
+                        total_output_text += len(delta_text)
                         
-                        if content:
-                            delta_obj = self._DeltaObject(content)
-                            yield self._MessageDeltaChunk(delta_obj)
-                    elif chunk.get('type') == 'message_stop':
-                        yield self._ChunkObject('message_stop')
-                    
-                except json.JSONDecodeError:
-                    # Skip malformed chunks
-                    continue
-                
-                # Check if we need to implement Vercel timeout protection
-                # If we're getting close to Vercel's timeout limit, we'll signal to the client
-                # that they need to request the continuation of this stream
-                if self.is_vercel and chunk_count > 0 and chunk_count % 10 == 0:
-                    # Every 10 chunks, check how much time has passed
-                    # This is a simplified approach - in a production environment you might 
-                    # want to actually track time elapsed
-                    pass
-        
-        except requests.exceptions.ChunkedEncodingError:
-            # This can happen when the connection is terminated early
-            if self.is_vercel:
-                # Signal that the client needs to reconnect
-                yield self._ReconnectSignal(self.session_id, chunk_count)
-            else:
-                # For local environment, just let the exception propagate
-                raise
+                        # Create delta object with metadata for reconnection
+                        delta_obj = self._MessageDeltaChunk(
+                            self._DeltaObject(delta_text)
+                        )
+                        
+                        # Add metadata for reconnection
+                        delta_obj.chunk_id = f"{self.session_id}_{self.chunk_count}"
+                        delta_obj.session_id = self.session_id
+                        delta_obj.chunk_count = self.chunk_count
+                        
+                        # Add to buffer for potential reconnection
+                        self._add_to_buffer(delta_obj)
+                        
+                        # Send heartbeat/keepalive every 50 chunks
+                        if self.chunk_count % 50 == 0:
+                            yield self._create_keepalive()
+                        
+                        # Yield the chunk
+                        yield delta_obj
+                        
+                    elif hasattr(chunk, 'thinking') and chunk.thinking:
+                        # We have thinking update
+                        thinking_content = chunk.thinking.content if hasattr(chunk.thinking, "content") else ""
+                        thinking_obj = self._ThinkingUpdateChunk(
+                            self._ThinkingObject(thinking_content)
+                        )
+                        
+                        # Add metadata for reconnection
+                        thinking_obj.chunk_id = f"{self.session_id}_{self.chunk_count}"
+                        thinking_obj.session_id = self.session_id
+                        thinking_obj.chunk_count = self.chunk_count
+                        
+                        # Yield thinking update
+                        yield thinking_obj
+                        
+                except Exception as e:
+                    # Log any errors but continue
+                    print(f"Error processing chunk: {str(e)}")
+                    self.last_error = str(e)
+                    # Don't break the iteration - continue to next chunk
+            
+            # Stream completed successfully
+            # Create a completion object with usage statistics
+            # This is important for large content to know when it's complete
+            usage_info = None
+            if hasattr(self.stream_response, 'usage'):
+                usage_obj = self.stream_response.usage
+                usage_info = self._UsageInfo(
+                    getattr(usage_obj, 'input_tokens', 0),
+                    getattr(usage_obj, 'output_tokens', 0),
+                    getattr(usage_obj, 'thinking_tokens', 0)
+                )
+            
+            # Create a completion message
+            completion = {
+                "type": "message_complete",
+                "id": self.session_id,
+                "chunk_id": f"{self.session_id}_{self.chunk_count}",
+                "session_id": self.session_id,
+                "final_chunk_count": self.chunk_count,
+                "usage": usage_info.__dict__ if usage_info else None
+            }
+            
+            # For JSON serialization, we just need a simple object with attributes
+            completion_obj = type('CompletionObject', (), completion)
+            yield completion_obj
+            
+            # End the stream
+            end_event = {
+                "type": "stream_end",
+                "session_id": self.session_id
+            }
+            end_event_obj = type('EndEvent', (), end_event)
+            yield end_event_obj
+            
         except Exception as e:
-            # Handle other exceptions
-            print(f"Error in streaming response: {str(e)}")
-            if self.is_vercel:
-                yield self._ErrorChunk(str(e))
+            # If there's a terminal error, send an error message
+            print(f"Stream error: {str(e)}")
+            error_obj = self._ErrorChunk(str(e))
+            error_obj.session_id = self.session_id
+            yield error_obj
+
+    def _add_to_buffer(self, chunk):
+        """Add a chunk to the reconnection buffer, maintaining max buffer size"""
+        self.buffer.append(chunk)
+        if len(self.buffer) > self.buffer_limit:
+            self.buffer.pop(0)  # Remove oldest chunk
     
+    def _create_keepalive(self):
+        """Create a keepalive message to prevent timeout"""
+        keepalive = {
+            "type": "keepalive",
+            "timestamp": time.time(),
+            "session_id": self.session_id,
+            "chunk_count": self.chunk_count
+        }
+        return type('KeepaliveObject', (), keepalive)
+
     # Helper classes to mimic Anthropic client objects
     class _ChunkObject:
         def __init__(self, type_name):
