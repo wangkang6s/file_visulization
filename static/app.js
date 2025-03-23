@@ -1134,6 +1134,8 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
     let generatedContent = '';
     let sessionId = '';
     let reconnectAttempts = 0;
+    let lastKeepAliveTime = Date.now(); // Track last keepalive
+    const KEEPALIVE_TIMEOUT = 10000; // 10 seconds without keepalive would trigger reconnection
     
     try {
         // Show streaming status
@@ -1184,6 +1186,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
             
             try {
                 // Start the streaming request
+                console.log('Making fetch request to', `${API_URL}/api/process-stream`);
                 const response = await fetch(`${API_URL}/api/process-stream`, {
                     method: 'POST',
                     headers: {
@@ -1196,7 +1199,8 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                     const errorText = await response.text();
                     
                     // Special handling for timeout errors that might contain session information
-                    if (response.status === 504 && errorText.includes('FUNCTION_INVOCATION_TIMEOUT')) {
+                    if ((response.status === 504 || response.status === 500) && 
+                        (errorText.includes('FUNCTION_INVOCATION_TIMEOUT') || errorText.includes('timed out'))) {
                         console.log('Vercel timeout detected, will attempt reconnection');
                         
                         // Extract session ID if present in the error message
@@ -1226,138 +1230,198 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 const reader = response.body.getReader();
                 let decoder = new TextDecoder();
                 
-                // Process the stream
-                while (true) {
-                    const { value, done } = await reader.read();
-                    
-                    if (done) {
-                        console.log('Stream complete');
-                        break;
-                    }
-                    
-                    // Decode the chunk
-                    const chunk = decoder.decode(value, { stream: true });
-                    console.log('Received chunk:', chunk.substring(0, 50) + '...');
-                    
-                    // Process the chunk - look for data: lines
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        // Skip empty lines
-                        if (!line.trim()) continue;
+                // Setup keepalive monitoring
+                let isStreamActive = true;
+                let keepaliveMonitor = setInterval(() => {
+                    const now = Date.now();
+                    if (now - lastKeepAliveTime > KEEPALIVE_TIMEOUT && isStreamActive) {
+                        console.warn('No keepalive received for', (now - lastKeepAliveTime) / 1000, 'seconds. Reconnecting...');
+                        clearInterval(keepaliveMonitor);
+                        isStreamActive = false;
                         
-                        // Handle SSE format (data: {...})
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                
-                                // Handle thinking updates
-                                if (data.type === 'thinking_update') {
-                                    if (data.thinking && data.thinking.content) {
-                                        setProcessingText(`Claude is thinking: ${data.thinking.content.substring(0, 100)}...`);
-                                    }
-                                    continue;
-                                }
-                                
-                                // Handle new local streaming format (type: delta)
-                                if (data.type === 'delta' && data.content) {
-                                    generatedContent += data.content;
-                                    updateHtmlPreview(generatedContent);
-                                    continue;
-                                }
-                                
-                                // Handle content block deltas (the actual generated text) - Vercel format
-                                if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
-                                    generatedContent += data.delta.text;
-                                    updateHtmlPreview(generatedContent);
-                                    continue;
-                                }
-                                
-                                // Save chunk ID for potential reconnection
-                                if (data.chunk_id) {
-                                    lastChunkId = data.chunk_id;
-                                }
-                                
-                                // Check for the local message_complete
-                                if (data.type === 'end') {
-                                    console.log('End message received from local server');
-                                    // Store the generated HTML for later use
-                                    state.generatedHtml = generatedContent;
-                                    generatedHtml = generatedContent; // Update global variable too
-                                    
-                                    // Final UI update
-                                    updateHtmlDisplay();
-                                }
-                                
-                                // Handle message complete from Vercel
-                                if (data.type === 'message_complete') {
-                                    console.log('Message complete received');
-                                    
-                                    // If html is provided directly, use it
-                                    if (data.html) {
-                                        console.log(`HTML content received in message_complete (length: ${data.html.length})`);
-                                        generatedContent = data.html;
-                                    }
-                                    
-                                    // Ensure we store the generated HTML
-                                    state.generatedHtml = generatedContent;
-                                    generatedHtml = generatedContent; // Update global variable too
-                                    
-                                    // Final UI update
-                                    updateHtmlPreview(generatedContent);
-                                    updateHtmlDisplay();
-                                    
-                                    // Update usage statistics
-                                    if (data.usage) {
-                                        updateTokenStats(data.usage);
-                                        
-                                        // Calculate cost if available
-                                        const totalCost = data.usage.total_cost || 
-                                            ((data.usage.input_tokens / 1000000) * 3.0 + 
-                                             (data.usage.output_tokens / 1000000) * 15.0);
-                                        elements.totalCost.textContent = formatCostDisplay(totalCost);
-                                        
-                                        // Update storage with new usage stats
-                                        try {
-                                            // Get existing stats
-                                            const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
-                                            
-                                            // Update stats
-                                            existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
-                                            existingStats.totalTokens = (existingStats.totalTokens || 0) + 
-                                                (data.usage.input_tokens + data.usage.output_tokens);
-                                            existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
-                                            
-                                            // Save updated stats
-                                            localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
-                                            
-                                            // Update UI if stats container exists
-                                            if (document.getElementById('total-runs')) {
-                                                document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
-                                            }
-                                            if (document.getElementById('total-tokens')) {
-                                                document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
-                                            }
-                                            if (document.getElementById('total-cost')) {
-                                                document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
-                                            }
-                                        } catch (e) {
-                                            console.error('Error updating usage statistics:', e);
-                                        }
-                                    }
-                                }
-                                
-                                // Handle html field if present separately
-                                if (data.html && data.type !== 'message_complete') {
-                                    console.log(`HTML content received directly (length: ${data.html.length})`);
-                                    generatedContent = data.html;
-                                    state.generatedHtml = data.html;
-                                    updateHtmlPreview(generatedContent);
-                                }
-                            } catch (e) {
-                                console.warn('Error parsing data line:', e, line);
+                        // Force reader to stop
+                        reader.cancel('No keepalive received');
+                        
+                        // Only try to reconnect if we haven't completed
+                        if (!state.generatedHtml) {
+                            reconnectAttempts++;
+                            if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                                processStreamChunk(true, lastChunkId).catch(console.error);
+                            } else {
+                                console.error('Max reconnect attempts reached after keepalive timeout');
+                                showToast('Connection lost. Please try again.', 'error');
+                                resetGenerationUI(false);
                             }
                         }
+                    }
+                }, 1000);
+                
+                // Process the stream
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        
+                        if (done) {
+                            console.log('Stream complete');
+                            clearInterval(keepaliveMonitor);
+                            break;
+                        }
+                        
+                        // Decode the chunk
+                        const chunk = decoder.decode(value, { stream: true });
+                        console.log('Received chunk:', chunk.substring(0, 50) + '...');
+                        
+                        // Process the chunk - look for data: lines
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            // Skip empty lines
+                            if (!line.trim()) continue;
+                            
+                            // Handle SSE format (data: {...})
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    
+                                    // Update the keepalive time for keepalive events
+                                    if (line.includes('event: keepalive')) {
+                                        lastKeepAliveTime = Date.now();
+                                        console.log('Received keepalive at', new Date().toISOString());
+                                        continue;
+                                    }
+                                    
+                                    // Handle thinking updates
+                                    if (data.type === 'thinking_update') {
+                                        if (data.thinking && data.thinking.content) {
+                                            setProcessingText(`Claude is thinking: ${data.thinking.content.substring(0, 100)}...`);
+                                        }
+                                        lastKeepAliveTime = Date.now(); // Count these as keepalives too
+                                        continue;
+                                    }
+                                    
+                                    // Handle new local streaming format (type: delta)
+                                    if (data.type === 'delta' && data.content) {
+                                        generatedContent += data.content;
+                                        updateHtmlPreview(generatedContent);
+                                        lastKeepAliveTime = Date.now(); // Count content as keepalive
+                                        continue;
+                                    }
+                                    
+                                    // Handle content block deltas (the actual generated text) - Vercel format
+                                    if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
+                                        generatedContent += data.delta.text;
+                                        updateHtmlPreview(generatedContent);
+                                        lastKeepAliveTime = Date.now(); // Count content as keepalive
+                                        continue;
+                                    }
+                                    
+                                    // Save chunk ID for potential reconnection
+                                    if (data.chunk_id) {
+                                        lastChunkId = data.chunk_id;
+                                    }
+                                    
+                                    // Check for the local message_complete
+                                    if (data.type === 'end') {
+                                        console.log('End message received from local server');
+                                        // Store the generated HTML for later use
+                                        state.generatedHtml = generatedContent;
+                                        generatedHtml = generatedContent; // Update global variable too
+                                        
+                                        // Final UI update
+                                        updateHtmlDisplay();
+                                        clearInterval(keepaliveMonitor);
+                                    }
+                                    
+                                    // Handle message complete from Vercel
+                                    if (data.type === 'message_complete') {
+                                        console.log('Message complete received');
+                                        
+                                        // If html is provided directly, use it
+                                        if (data.html) {
+                                            console.log(`HTML content received in message_complete (length: ${data.html.length})`);
+                                            generatedContent = data.html;
+                                        }
+                                        
+                                        // Ensure we store the generated HTML
+                                        state.generatedHtml = generatedContent;
+                                        generatedHtml = generatedContent; // Update global variable too
+                                        
+                                        // Final UI update
+                                        updateHtmlPreview(generatedContent);
+                                        updateHtmlDisplay();
+                                        clearInterval(keepaliveMonitor);
+                                        
+                                        // Update usage statistics
+                                        if (data.usage) {
+                                            updateTokenStats(data.usage);
+                                            
+                                            // Calculate cost if available
+                                            const totalCost = data.usage.total_cost || 
+                                                ((data.usage.input_tokens / 1000000) * 3.0 + 
+                                                 (data.usage.output_tokens / 1000000) * 15.0);
+                                            elements.totalCost.textContent = formatCostDisplay(totalCost);
+                                            
+                                            // Update storage with new usage stats
+                                            try {
+                                                // Get existing stats
+                                                const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                                                
+                                                // Update stats
+                                                existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                                                existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                                                    (data.usage.input_tokens + data.usage.output_tokens);
+                                                existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
+                                                
+                                                // Save updated stats
+                                                localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                                                
+                                                // Update UI if stats container exists
+                                                if (document.getElementById('total-runs')) {
+                                                    document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                                                }
+                                                if (document.getElementById('total-tokens')) {
+                                                    document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                                                }
+                                                if (document.getElementById('total-cost')) {
+                                                    document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
+                                                }
+                                            } catch (e) {
+                                                console.error('Error updating usage statistics:', e);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Handle html field if present separately
+                                    if (data.html && data.type !== 'message_complete') {
+                                        console.log(`HTML content received directly (length: ${data.html.length})`);
+                                        generatedContent = data.html;
+                                        state.generatedHtml = data.html;
+                                        updateHtmlPreview(generatedContent);
+                                        lastKeepAliveTime = Date.now(); // Count content as keepalive
+                                    }
+                                } catch (e) {
+                                    console.warn('Error parsing data line:', e, line);
+                                }
+                            }
+                        }
+                    }
+                } catch (streamError) {
+                    console.error('Error in stream processing:', streamError);
+                    clearInterval(keepaliveMonitor);
+                    
+                    // If the stream was deliberately cancelled for reconnection,
+                    // don't throw the error (the reconnection logic will handle it)
+                    if (streamError.message === 'No keepalive received') {
+                        return;
+                    }
+                    
+                    // For other errors, check if we need to reconnect
+                    if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                        reconnectAttempts++;
+                        await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
+                        return await processStreamChunk(true, lastChunkId);
+                    } else {
+                        throw streamError;
                     }
                 }
                 
@@ -1379,7 +1443,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 
             } catch (error) {
                 // Check if this is a timeout error that we can recover from
-                if (error.message.includes('FUNCTION_INVOCATION_TIMEOUT') && reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                if ((error.message.includes('FUNCTION_INVOCATION_TIMEOUT') || 
+                    error.message.includes('timed out') ||
+                    error.message.includes('Error: 504')) && 
+                    reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                     console.log('Reconnecting due to timeout...');
                     reconnectAttempts++;
                     await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));

@@ -42,6 +42,10 @@ module.exports = async (req, res) => {
   // Start time for tracking elapsed time
   const startTime = Date.now();
   
+  // For breaking down processing into smaller chunks
+  let completedChunks = 0;
+  const MAX_CHUNKS_PER_RESPONSE = 10; // Adjust as needed
+  
   try {
     // Log the start of the request
     console.log('Process-stream request received');
@@ -59,13 +63,13 @@ module.exports = async (req, res) => {
     
     if (!content) {
       console.error('Content is required but was empty');
-      writeEvent('error', { type: 'error', error: 'Content is required' });
+      writeEvent('error', { error: 'Content is required' });
       return res.end();
     }
     
     if (!apiKey || !apiKey.startsWith('sk-ant')) {
       console.error('Invalid API key format');
-      writeEvent('error', { type: 'error', error: 'Valid API key required' });
+      writeEvent('error', { error: 'Valid API key required' });
       return res.end();
     }
     
@@ -81,6 +85,9 @@ module.exports = async (req, res) => {
     // Send start event
     writeEvent('stream_start', { message: 'Stream starting' });
     
+    // Send initial keepalive message right away
+    writeEvent('keepalive', { timestamp: Date.now() / 1000 });
+    
     // System prompt
     const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
     
@@ -90,9 +97,6 @@ module.exports = async (req, res) => {
       `Generate HTML for this content: ${content.substring(0, Math.min(content.length, 40000))}`;
     
     console.log(`User content prepared, length: ${userContent.length}`);
-    
-    // Send a keepalive message
-    writeEvent('keepalive', { timestamp: Date.now() / 1000 });
     
     try {
       console.log('Importing Anthropic...');
@@ -130,24 +134,27 @@ module.exports = async (req, res) => {
       let chunkCount = 0;
       let stream;
       
+      // Setup keepalive interval that doesn't depend on stream chunks
+      const keepaliveInterval = setInterval(() => {
+        try {
+          writeEvent('keepalive', { timestamp: Date.now() / 1000 });
+          console.log('Sent keepalive');
+        } catch (e) {
+          console.error('Error sending keepalive:', e);
+          clearInterval(keepaliveInterval);
+        }
+      }, 1000); // Send keepalive every second
+      
       while (retryCount <= maxRetries && !success) {
         try {
           console.log(`Attempt ${retryCount + 1}/${maxRetries + 1} to create stream`);
           stream = await anthropic.messages.create(streamOpts);
           
           console.log('Stream created, processing chunks...');
-          let lastKeepAliveTime = Date.now();
           
           // Process chunks
           for await (const chunk of stream) {
             chunkCount++;
-            
-            // Send keepalive messages every 2 seconds
-            const now = Date.now();
-            if (now - lastKeepAliveTime > 2000) {
-              writeEvent('keepalive', { timestamp: now / 1000 });
-              lastKeepAliveTime = now;
-            }
             
             if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
               const textChunk = chunk.delta.text;
@@ -211,11 +218,15 @@ module.exports = async (req, res) => {
               details: JSON.stringify(error)
             });
             console.error('Error details:', error);
+            clearInterval(keepaliveInterval);
             res.end();
             return;
           }
         }
       }
+      
+      // Clear the keepalive interval
+      clearInterval(keepaliveInterval);
       
       // Calculate token usage
       const systemPromptTokens = Math.floor(systemPrompt.length / 3);

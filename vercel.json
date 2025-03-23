@@ -20,5 +20,10 @@
       "dest": "/server.py"
     }
   ],
-  "buildCommand": "chmod +x build_files.sh && ./build_files.sh"
+  "buildCommand": "chmod +x build_files.sh && ./build_files.sh",
+  "functions": {
+    "api/process-stream.js": {
+      "maxDuration": 60
+    }
+  }
 } 
