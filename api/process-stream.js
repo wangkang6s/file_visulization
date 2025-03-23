@@ -148,44 +148,44 @@ export default async function handler(req) {
               const abortController = new AbortController();
               const signal = abortController.signal;
               
+              // Call Anthropic API directly with corrected headers and structure
+              const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': apiKey,
+                  'anthropic-version': '2023-06-01', // Required API version
+                  'anthropic-beta': 'messages-2023-12-15' // Optional beta features
+                },
+                body: JSON.stringify({
+                  model: 'claude-3-5-sonnet-20240620',
+                  max_tokens: maxTokens,
+                  temperature: temperature,
+                  system: systemPrompt,
+                  messages: [{ role: 'user', content: userContent }],
+                  stream: true,
+                  thinking: { 
+                    type: "enabled", 
+                    budget_tokens: thinkingBudget 
+                  }
+                }),
+                signal
+              });
+              
+              if (!response.ok) {
+                const errorText = await response.text();
+                console.error('Anthropic API error response:', errorText);
+                throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
+              }
+              
+              console.log('Stream created, processing chunks...');
+              
+              // Process the response as a stream
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              let buffer = ''; // Buffer to handle partial chunks
+              
               try {
-                // Call Anthropic API directly with corrected headers and structure
-                const response = await fetch('https://api.anthropic.com/v1/messages', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': apiKey,
-                    'anthropic-version': '2023-06-01', // Required API version
-                    'anthropic-beta': 'messages-2023-12-15' // Optional beta features
-                  },
-                  body: JSON.stringify({
-                    model: 'claude-3-5-sonnet-20240620',
-                    max_tokens: maxTokens,
-                    temperature: temperature,
-                    system: systemPrompt,
-                    messages: [{ role: 'user', content: userContent }],
-                    stream: true,
-                    thinking: { 
-                      type: "enabled", 
-                      budget_tokens: thinkingBudget 
-                    }
-                  }),
-                  signal
-                });
-                
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  console.error('Anthropic API error response:', errorText);
-                  throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
-                }
-                
-                console.log('Stream created, processing chunks...');
-                
-                // Process the response as a stream
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = ''; // Buffer to handle partial chunks
-                
                 // Process chunks
                 while (true) {
                   const { done, value } = await reader.read();
@@ -248,167 +248,172 @@ export default async function handler(req) {
                         // Send chunk in content_block_delta format to match server.py
                         writeEvent('content', { 
                           type: 'content_block_delta', 
-                          delta: { text: escape(textChunk) },
-                          chunk_id: `${messageId}-${chunkCount}`
+                          chunk_id: `${messageId}_${chunkCount}`,
+                          delta: {
+                            text: textChunk
+                          }
                         });
                         
-                        // Log every 20th chunk
-                        if (chunkCount % 20 === 0) {
-                          console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
-                        }
-                      }
-                      // Handle thinking block
-                      else if (parsed.type === 'content_block_delta' && 
-                               parsed.delta && 
-                               parsed.delta.type === 'thinking_delta') {
-                        console.log('Received thinking update');
-                        writeEvent('content', { 
-                          type: 'thinking_update', 
-                          thinking: { 
-                            content: escape(parsed.delta.thinking || '') 
-                          },
-                          chunk_id: `${messageId}-thinking-${chunkCount}`
+                        // More frequent keepalives during processing
+                        writeEvent('keepalive', { 
+                          timestamp: Date.now() / 1000,
+                          chunk_count: chunkCount
                         });
-                      }
-                      // Handle message completion
-                      else if (parsed.type === 'message_stop') {
-                        console.log('Received message_stop event');
+                        
+                        // Debug logging
+                        if (chunkCount % 10 === 0) {
+                          console.log(`Processed ${chunkCount} chunks, current length: ${htmlOutput.length}`);
+                        }
+                      } else if (parsed.type === 'thinking') {
+                        // Pass thinking update to client
+                        writeEvent('thinking_update', {
+                          thinking: parsed
+                        });
+                      } else if (parsed.type === 'message_start') {
+                        console.log('Message start received');
+                        writeEvent('keepalive', { timestamp: Date.now() / 1000 });
+                      } else if (parsed.type === 'message_delta') {
+                        if (parsed.delta && parsed.delta.stop_reason) {
+                          console.log(`Message completion: ${parsed.delta.stop_reason}`);
+                        }
+                      } else if (parsed.type === 'message_stop') {
+                        // Final message completion
+                        console.log('Message stop received');
+                        
+                        // Send message complete event
+                        writeEvent('message_complete', {
+                          message: 'Content generation complete'
+                        });
+                        
+                        // Mark as successful
                         success = true;
+                      } else {
+                        console.log(`Other event type: ${parsed.type}`);
                       }
-                      // Handle other events
-                      else {
-                        console.log(`Received event of type: ${eventType} with type: ${parsed.type}`);
-                      }
-                    } catch (parseError) {
-                      console.error('Error parsing event data:', parseError, 'for event data:', eventData);
-                      // Continue processing other events even if one fails
+                    } catch (e) {
+                      console.error('Error parsing event data:', e);
+                      console.error('Event data:', eventData.substring(0, 200));
                     }
                   }
                 }
                 
-                // If we get here, streaming completed successfully
-                success = true;
-                console.log(`Stream completed with ${chunkCount} total chunks`);
-                
-              } catch (abortError) {
-                if (abortError.name === 'AbortError') {
-                  console.log('API call was aborted due to timeout');
-                  throw new Error('API call timed out');
+                // If we've completed successfully, break the retry loop
+                if (success) {
+                  console.log(`HTML generation complete, length: ${htmlOutput.length} characters`);
+                  break;
                 }
-                throw abortError;
+              } catch (streamError) {
+                console.error('Error during stream processing:', streamError);
+                throw streamError; // Rethrow to be caught by the retry logic
               }
               
-            } catch (error) {
-              console.error(`Error in attempt ${retryCount + 1}:`, error);
+            } catch (requestError) {
+              console.error('Error during request/streaming:', requestError);
               
-              // If the stream has ended, don't retry
-              if (hasEnded) {
-                console.log('Stream already ended, not retrying');
-                break;
-              }
-              
-              // Check if it's an overloaded error (529)
-              const isOverloaded = error.status === 529 || 
-                                 (error.response && error.response.status === 529) ||
-                                 (error.message && error.message.includes('529'));
-              
-              if ((isOverloaded || error.message.includes('429')) && retryCount < maxRetries) {
-                retryCount++;
-                const waitTime = backoffTime / 1000; // Convert to seconds for display
-                
-                console.log(`Anthropic API overloaded. Retry ${retryCount}/${maxRetries} after ${waitTime}s`);
-                
-                // Send status update to client
-                writeEvent('status', { 
-                  message: `Anthropic API temporarily overloaded. Retrying in ${waitTime}s...`
-                });
-                lastEventTime = Date.now();
-                
-                await sleep(backoffTime);
-                backoffTime *= 2; // Exponential backoff
-                continue; // Try again
-              } else {
-                // Other error or we've exhausted retries
+              // Check if we've already tried the maximum number of times
+              if (retryCount >= maxRetries) {
                 writeEvent('error', { 
-                  error: escape(error.message || 'Unknown error'),
-                  details: JSON.stringify(error)
+                  error: `Failed after ${maxRetries + 1} attempts: ${requestError.message}` 
                 });
-                console.error('Error details:', error);
-                
-                // Clean up resources
-                if (keepaliveInterval) clearInterval(keepaliveInterval);
-                
-                safeEndStream();
-                return;
+                throw requestError;
               }
+              
+              // Increment retry count and apply exponential backoff
+              retryCount++;
+              const jitter = Math.random() * 500;
+              backoffTime = Math.min(10000, backoffTime * 2) + jitter;
+              
+              console.log(`Retrying after ${backoffTime}ms...`);
+              
+              // Let the client know we're retrying
+              writeEvent('status', { 
+                message: `Request attempt ${retryCount}/${maxRetries + 1} failed, retrying in ${Math.round(backoffTime/1000)}s...` 
+              });
+              
+              // Wait before the next retry
+              await sleep(backoffTime);
             }
           }
           
-          // Clear the keepalive interval
-          if (keepaliveInterval) clearInterval(keepaliveInterval);
-          
-          // Calculate token usage
-          const systemPromptTokens = Math.floor(systemPrompt.length / 3);
-          const contentTokens = Math.floor(content.length / 4);
-          const inputTokens = systemPromptTokens + contentTokens;
-          const outputTokens = Math.floor(htmlOutput.length / 4);
-          const elapsed = Date.now() - startTime;
-          
-          console.log(`Calculated usage - inputTokens: ${inputTokens}, outputTokens: ${outputTokens}, time: ${elapsed}ms`);
-          
-          // Only send completion message if the stream hasn't already ended
-          if (!hasEnded) {
-            // Send completion message in the format expected by the client
-            writeEvent('content', {
-              type: 'message_complete',
-              message_id: messageId,
-              chunk_id: `${messageId}-final`,
-              usage: {
-                input_tokens: inputTokens,
-                output_tokens: outputTokens,
-                thinking_tokens: thinkingBudget,
-                total_cost: ((inputTokens + outputTokens) / 1000000 * 3.0),
-                time_elapsed: elapsed / 1000 // Convert to seconds
-              },
-              html: htmlOutput // Don't escape the HTML here
+          // Process the HTML output before completing
+          if (htmlOutput) {
+            // Create a complete HTML document if it doesn't look like one already
+            let finalHtml = htmlOutput;
+            if (!finalHtml.trim().toLowerCase().startsWith('<!doctype html>') && 
+                !finalHtml.trim().toLowerCase().startsWith('<html')) {
+              finalHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Generated Visualization</title>
+</head>
+<body>
+  ${finalHtml}
+</body>
+</html>`;
+            }
+            
+            // Send complete content event with the full HTML
+            writeEvent('content_complete', { 
+              content: finalHtml,
+              length: finalHtml.length,
+              chunks: chunkCount
             });
             
-            // Send end event and end the stream
-            console.log('Stream response complete, ending stream');
-            safeEndStream();
+            console.log(`Content complete sent, length: ${finalHtml.length}`);
           }
+          
+          // Complete the stream after sending all the data
+          const elapsed = (Date.now() - startTime) / 1000;
+          writeEvent('complete', { 
+            message: 'Stream processing complete',
+            elapsed: elapsed,
+            html_length: htmlOutput.length,
+            success: true
+          });
+          
+          console.log(`Generation complete. Elapsed time: ${elapsed}s`);
+          
         } catch (error) {
-          console.error('Error in Anthropic processing:', error);
+          console.error('Error in stream processing:', error);
           
-          // Clean up resources
-          if (keepaliveInterval) clearInterval(keepaliveInterval);
-          
-          // Send error and end stream if not already ended
-          if (!hasEnded) {
-            writeEvent('error', { error: escape(error.message) });
-            safeEndStream();
+          writeEvent('error', { 
+            error: `Stream processing error: ${error.message}` 
+          });
+        } finally {
+          // Ensure timer is cleaned up
+          if (keepaliveInterval) {
+            clearInterval(keepaliveInterval);
           }
+          
+          // Always send a final event indicating the stream is done
+          writeEvent('stream_end', { 
+            message: 'Stream finished', 
+            timestamp: Date.now() / 1000,
+            success: success || false
+          });
+          
+          // Safely close the controller
+          safeEndStream();
         }
-      } catch (error) {
-        console.error('Error in process-stream:', error);
+      } catch (e) {
+        console.error('Fatal error in handler:', e);
         
-        // Clean up resources
-        if (keepaliveInterval) clearInterval(keepaliveInterval);
-        
-        // Send error message if stream hasn't ended
+        // Try to send a final error event
         try {
-          if (!hasEnded) {
-            writeEvent('error', { error: escape(error.message) });
-            safeEndStream();
-          }
-        } catch (responseError) {
-          console.error('Error sending error event:', responseError);
+          writeEvent('error', { error: `Fatal error: ${e.message}` });
+        } catch (_) {
+          console.error('Failed to send error event');
         }
+        
+        // Ensure the stream is closed properly
+        safeEndStream();
       }
     }
   });
-
-  // Return the stream with appropriate headers
+  
+  // Return the stream as the response
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
@@ -416,19 +421,17 @@ export default async function handler(req) {
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'X-Accel-Buffering': 'no' // Prevents buffering in some proxies
+      'Access-Control-Allow-Headers': 'Content-Type'
     }
   });
 }
 
-// Helper function to escape HTML content
+// Helper to escape HTML
 function escape(text) {
-  if (!text) return '';
-  return String(text)
+  return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/'/g, '&#039;');
 } 
