@@ -481,7 +481,8 @@ function switchTab(tab) {
     
     state.activeTab = tab;
     
-    if (!elements.fileTab || !elements.textTab || !elements.fileInput || !elements.textInput) {
+    // Check for required tab elements using the correct element references
+    if (!elements.fileTab || !elements.textTab || !elements.fileInput || !elements.inputText) {
         console.error('Tab elements not found');
         return;
     }
@@ -494,7 +495,7 @@ function switchTab(tab) {
         elements.textTab.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-700', 'dark:text-gray-300');
         
         elements.fileInput.classList.remove('hidden');
-        elements.textInput.classList.add('hidden');
+        elements.inputText.classList.add('hidden');
         
         // Clear text input content when switching to file tab
         if (elements.inputText) {
@@ -508,7 +509,7 @@ function switchTab(tab) {
         elements.fileTab.classList.remove('bg-primary-100', 'dark:bg-primary-900', 'text-primary-700', 'dark:text-primary-300');
         elements.fileTab.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-700', 'dark:text-gray-300');
         
-        elements.textInput.classList.remove('hidden');
+        elements.inputText.classList.remove('hidden');
         elements.fileInput.classList.add('hidden');
         
         // Clear file data when switching to text tab
@@ -964,7 +965,9 @@ async function generateWebsite() {
         // Get the source content (text or file content)
         let content = '';
         if (state.activeTab === 'text') {
-            content = elements.textInput ? elements.textInput.value.trim() : '';
+            // Use the correct element reference (inputText instead of textInput)
+            // and also check state.textContent as a fallback
+            content = elements.inputText ? elements.inputText.value.trim() : (state.textContent || '');
         } else if (state.activeTab === 'file' && state.fileContent) {
             content = state.fileContent;
         }
