@@ -1,106 +1,23 @@
 {
   "version": 2,
-  "cleanUrls": true,
-  "rewrites": [
+  "builds": [
     {
-      "source": "/",
-      "destination": "/static/index.html"
-    },
-    {
-      "source": "/(.*).html",
-      "destination": "/static/index.html"
+      "src": "server.py",
+      "use": "@vercel/python"
     },
     {
-      "source": "/api/validate-key",
-      "destination": "/api/validate-key.js"
-    },
-    {
-      "source": "/api/analyze-tokens",
-      "destination": "/api/analyze-tokens.js"
-    },
-    {
-      "source": "/api/process-stream",
-      "destination": "/api/process-stream.js"
-    },
-    {
-      "source": "/api/test-vercel",
-      "destination": "/api/test-vercel.js"
-    },
-    {
-      "source": "/api/test-generate",
-      "destination": "/api/test-generate.js"
-    },
-    { 
-      "source": "/api/(.*)",
-      "destination": "/api" 
-    },
-    {
-      "source": "/static/(.*)",
-      "destination": "/static/$1"
-    },
-    {
-      "source": "/(.*).css",
-      "destination": "/static/$1.css"
-    },
-    {
-      "source": "/(.*).js",
-      "destination": "/static/$1.js"
-    },
-    {
-      "source": "/(.*).ico",
-      "destination": "/static/$1.ico"
-    },
-    {
-      "source": "/(.*).png",
-      "destination": "/static/$1.png"
-    },
-    { 
-      "source": "/(.*)",
-      "destination": "/static/index.html"
+      "src": "static/**",
+      "use": "@vercel/static"
     }
   ],
-  "functions": {
-    "api/index.py": {
-      "memory": 1024,
-      "maxDuration": 60
-    },
-    "api/validate-key.js": {
-      "memory": 512,
-      "maxDuration": 10
-    },
-    "api/analyze-tokens.js": {
-      "memory": 512,
-      "maxDuration": 10
-    },
-    "api/process-stream.js": {
-      "memory": 1024,
-      "maxDuration": 60
-    },
-    "api/test-vercel.js": {
-      "memory": 128,
-      "maxDuration": 5
-    },
-    "api/test-generate.js": {
-      "memory": 512,
-      "maxDuration": 10
-    }
-  },
-  "build": {
-    "env": {
-      "PYTHON_VERSION": "3.11",
-      "NODE_VERSION": "18"
-    }
-  },
-  "headers": [
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" },
-        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate" },
-        { "key": "Connection", "value": "keep-alive" }
-      ]
+      "src": "/static/(.*)",
+      "dest": "/static/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/server.py"
     }
   ]
 } 

@@ -4,4 +4,6 @@ gunicorn==21.2.0
 anthropic==0.19.1
 python-dotenv==1.0.0
 requests==2.31.0
-tiktoken==0.5.2 
+tiktoken==0.5.2
+PyPDF2==3.0.1
+python-docx==1.0.1 
