@@ -1341,6 +1341,26 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         continue;
                                     }
                                     
+                                    // Handle content_complete event which should include usage statistics
+                                    if (data.type === 'content_complete') {
+                                        console.log('Content complete received', data);
+                                        
+                                        // If content is provided, use it
+                                        if (data.content) {
+                                            generatedContent = data.content;
+                                            updateHtmlPreview(generatedContent);
+                                        }
+                                        
+                                        // If usage statistics are provided, update the UI
+                                        if (data.usage) {
+                                            console.log('Updating token stats with:', data.usage);
+                                            updateTokenStats(data.usage);
+                                        }
+                                        
+                                        lastKeepAliveTime = Date.now();
+                                        continue;
+                                    }
+                                    
                                     // Save chunk ID for potential reconnection
                                     if (data.chunk_id) {
                                         lastChunkId = data.chunk_id;
@@ -1359,6 +1379,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         
                                         // Final UI update
                                         updateHtmlDisplay();
+                                        stopElapsedTimeCounter(); // Only stop the timer when the generation is actually complete
                                         clearInterval(keepaliveMonitor);
                                     }
                                     
@@ -1383,6 +1404,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         // Final UI update
                                         updateHtmlPreview(generatedContent);
                                         updateHtmlDisplay();
+                                        stopElapsedTimeCounter(); // Only stop the timer when the message is complete
                                         clearInterval(keepaliveMonitor);
                                         
                                         // Update usage statistics
@@ -1613,9 +1635,11 @@ function showResultSection() {
     if (elements.resultSection) {
         elements.resultSection.classList.remove('hidden');
         
-        // Scroll to the results section
+        // Instead of scrolling to results section, scroll to processing section
         setTimeout(() => {
-            elements.resultSection.scrollIntoView({ behavior: 'smooth' });
+            if (elements.processingStatus) {
+                elements.processingStatus.scrollIntoView({ behavior: 'smooth' });
+            }
         }, 500);
     }
 }
@@ -1854,6 +1878,8 @@ function resetGenerationUI(success = false) {
             }
             // Keep it visible permanently
             elements.processingStatus.classList.remove('hidden');
+            // Only stop the time counter on successful completion
+            stopElapsedTimeCounter();
         } else {
             // On error, update status but keep visible
             if (elements.processingText) {
@@ -1865,10 +1891,11 @@ function resetGenerationUI(success = false) {
                 elements.processingIcon.style.color = "#EF4444"; // Red color
             }
             elements.processingStatus.classList.remove('hidden');
+            // Stop the timer also on error
+            stopElapsedTimeCounter();
         }
     }
     
-    stopElapsedTimeCounter();
     state.processing = false;
     disableInputsDuringGeneration(false);
 }

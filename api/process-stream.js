@@ -71,8 +71,10 @@ export default async function handler(req) {
         const temperature = body.temperature || 0.5;
         const formatPrompt = body.format_prompt || '';
         const testMode = body.test_mode === true;
+        const fileName = body.file_name || '';
+        const fileType = body.file_type || '';
         
-        console.log(`Request params: content length: ${content.length}, maxTokens: ${maxTokens}, temperature: ${temperature}, testMode: ${testMode}`);
+        console.log(`Request params: content length: ${content.length}, maxTokens: ${maxTokens}, temperature: ${temperature}, testMode: ${testMode}, fileType: ${fileType}`);
         
         if (!content) {
           console.error('Content is required but was empty');
@@ -121,7 +123,7 @@ export default async function handler(req) {
         }, 500);
         
         // System prompt - use the full prompt for best results
-        const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
+        const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.Your output is only one HTML file, do not present any other notes on the HTML.).";
         
         // Format user content - use smaller chunk for Vercel and simplify
         let userContent;
@@ -130,10 +132,21 @@ export default async function handler(req) {
           userContent = `This is a test mode request. Generate a simple HTML page saying "Test successful".`;
         } else {
           // For regular mode, use a smaller portion of content for Vercel
-          const contentSample = content.substring(0, Math.min(content.length, 20000));
-          userContent = formatPrompt ? 
-            `${formatPrompt}\n\nGenerate HTML for this content: ${contentSample}` :
-            `Generate HTML for this content: ${contentSample}`;
+          let contentToUse = content;
+          
+          // Special handling for PDF files that are base64 encoded
+          if (fileType === 'pdf') {
+            // If it's a PDF, we need to tell Claude that we're providing a base64-encoded PDF
+            userContent = formatPrompt ? 
+              `${formatPrompt}\n\nI'm providing a base64-encoded PDF file named "${fileName || 'document.pdf'}". The file content is too complex to decode in this environment. Please create a visualization based on what you know about PDFs and their common formats, creating a generic PDF viewer interface. Include placeholder content that indicates this is a PDF visualization.` :
+              `I'm providing a base64-encoded PDF file named "${fileName || 'document.pdf'}". The file content is too complex to decode in this environment. Please create a visualization based on what you know about PDFs and their common formats, creating a generic PDF viewer interface. Include placeholder content that indicates this is a PDF visualization.`;
+          } else {
+            // For regular text content
+            const contentSample = contentToUse.substring(0, Math.min(contentToUse.length, 20000));
+            userContent = formatPrompt ? 
+              `${formatPrompt}\n\nGenerate HTML for this content: ${contentSample}` :
+              `Generate HTML for this content: ${contentSample}`;
+          }
         }
         
         console.log(`User content prepared, length: ${userContent.length}`);
