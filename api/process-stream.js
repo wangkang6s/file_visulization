@@ -1,6 +1,4 @@
-// Process stream function for Vercel Edge Runtime using Anthropic API
-import { Anthropic } from '@anthropic-ai/sdk';
-
+// Process stream function for Vercel Edge Runtime using Anthropic API directly
 export const config = {
   runtime: 'edge',
   regions: ['iad1'], // Force specific US region for more consistent performance
@@ -132,29 +130,7 @@ export default async function handler(req) {
         console.log(`User content prepared, length: ${userContent.length}`);
         
         try {
-          console.log('Creating Anthropic client...');
-          // Create Anthropic client
-          const anthropic = new Anthropic({
-            apiKey: apiKey
-          });
-          
-          console.log('Creating message with streaming...');
-          // Create message with streaming
-          const streamOpts = {
-            model: 'claude-3-5-sonnet-20240620',
-            max_tokens: maxTokens,
-            temperature: temperature,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userContent }],
-            stream: true
-          };
-          
-          console.log('Stream options prepared:', JSON.stringify({
-            model: streamOpts.model,
-            max_tokens: streamOpts.max_tokens,
-            temperature: streamOpts.temperature,
-            stream: streamOpts.stream
-          }));
+          console.log('Preparing to call Anthropic API directly...');
           
           // Add retry logic with exponential backoff
           let maxRetries = 3;
@@ -163,7 +139,6 @@ export default async function handler(req) {
           let success = false;
           let htmlOutput = '';
           let chunkCount = 0;
-          let stream;
           
           while (retryCount <= maxRetries && !success && !hasEnded) {
             try {
@@ -174,53 +149,102 @@ export default async function handler(req) {
               const signal = abortController.signal;
               
               try {
-                // Add the signal to the options
-                stream = await anthropic.messages.create({
-                  ...streamOpts,
+                // Call Anthropic API directly
+                const response = await fetch('https://api.anthropic.com/v1/messages', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01'
+                  },
+                  body: JSON.stringify({
+                    model: 'claude-3-5-sonnet-20240620',
+                    max_tokens: maxTokens,
+                    temperature: temperature,
+                    system: systemPrompt,
+                    messages: [{ role: 'user', content: userContent }],
+                    stream: true
+                  }),
                   signal
                 });
                 
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
+                }
+                
                 console.log('Stream created, processing chunks...');
                 
+                // Process the response as a stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
                 // Process chunks
-                for await (const chunk of stream) {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  
                   // Update last event time
                   lastEventTime = Date.now();
                   
-                  // Skip processing if stream has ended
-                  if (hasEnded) {
-                    console.log('Stream already ended, stopping chunk processing');
+                  // Skip processing if stream has ended or done
+                  if (done || hasEnded) {
+                    console.log('Stream ended or closed');
                     break;
                   }
                   
-                  chunkCount++;
+                  // Decode the chunk
+                  const chunk = decoder.decode(value, { stream: true });
                   
-                  if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text') {
-                    const textChunk = chunk.delta.text;
-                    htmlOutput += textChunk;
-                    
-                    // Send chunk in content_block_delta format to match server.py
-                    writeEvent('content', { 
-                      type: 'content_block_delta', 
-                      delta: { text: escape(textChunk) },
-                      chunk_id: `${messageId}-${chunkCount}`
-                    });
-                    
-                    // Log every 20th chunk
-                    if (chunkCount % 20 === 0) {
-                      console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
+                  // Parse the chunk - it's a series of SSE lines that need to be parsed
+                  const lines = chunk.split('\n');
+                  
+                  for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                      const data = line.slice(6);
+                      
+                      // Anthropic sends [DONE] when streaming is complete
+                      if (data === '[DONE]') {
+                        console.log('Received [DONE] marker');
+                        break;
+                      }
+                      
+                      try {
+                        const parsed = JSON.parse(data);
+                        
+                        // Process different types of events
+                        if (parsed.type === 'content_block_delta' && parsed.delta.type === 'text') {
+                          const textChunk = parsed.delta.text;
+                          htmlOutput += textChunk;
+                          chunkCount++;
+                          
+                          // Send chunk in content_block_delta format to match server.py
+                          writeEvent('content', { 
+                            type: 'content_block_delta', 
+                            delta: { text: escape(textChunk) },
+                            chunk_id: `${messageId}-${chunkCount}`
+                          });
+                          
+                          // Log every 20th chunk
+                          if (chunkCount % 20 === 0) {
+                            console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
+                          }
+                        }
+                        // Handle thinking updates if available
+                        else if (parsed.type === 'thinking') {
+                          console.log('Received thinking update');
+                          writeEvent('content', { 
+                            type: 'thinking_update', 
+                            thinking: { 
+                              content: escape(parsed.thinking ? parsed.thinking.content : '') 
+                            },
+                            chunk_id: `${messageId}-thinking-${chunkCount}`
+                          });
+                        }
+                      } catch (parseError) {
+                        console.error('Error parsing chunk:', parseError);
+                        // Continue processing other chunks even if one fails
+                      }
                     }
-                  }
-                  // Handle thinking updates if available
-                  else if (chunk.type === 'thinking') {
-                    console.log('Received thinking update');
-                    writeEvent('content', { 
-                      type: 'thinking_update', 
-                      thinking: { 
-                        content: escape(chunk.thinking ? chunk.thinking.content : '') 
-                      },
-                      chunk_id: `${messageId}-thinking-${chunkCount}`
-                    });
                   }
                 }
                 
