@@ -143,7 +143,7 @@ module.exports = async (req, res) => {
           console.error('Error sending keepalive:', e);
           clearInterval(keepaliveInterval);
         }
-      }, 1000); // Send keepalive every second
+      }, 500); // Send keepalive every 500ms for more reliability
       
       while (retryCount <= maxRetries && !success) {
         try {

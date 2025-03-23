@@ -66,4 +66,13 @@ A web application that uses Claude 3.7 to generate beautiful HTML visualizations
 - [TailwindCSS](https://tailwindcss.com/) for styling
 - [Flask](https://flask.palletsprojects.com/) for the web framework
 - [PyPDF2](https://pypi.org/project/PyPDF2/) for PDF processing
-- [python-docx](https://python-docx.readthedocs.io/) for Word document processing 
+- [python-docx](https://python-docx.readthedocs.io/) for Word document processing
+
+## Vercel Deployment
+
+This project can be deployed on Vercel. The serverless function configuration has been optimized to handle streaming responses and prevent timeouts during the HTML generation process.
+
+### Recent Fixes:
+- Added improved keepalive mechanism to prevent Vercel function timeouts
+- Enhanced reconnection handling for more robust streaming
+- Modified timeout settings in vercel.json 
