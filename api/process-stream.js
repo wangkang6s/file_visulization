@@ -1,13 +1,23 @@
 // Process stream function for Vercel Edge Runtime using Anthropic API
+import { Anthropic } from '@anthropic-ai/sdk';
+
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'], // Force specific US region for more consistent performance
+};
+
 export default async function handler(req) {
   // Create a new ReadableStream with a controller to manage the flow
   const stream = new ReadableStream({
     async start(controller) {
+      // Create TextEncoder once
+      const encoder = new TextEncoder();
+      
       // Function to write event to stream
       function writeEvent(eventType, data) {
         // Format in the SSE format expected by the client
         const eventString = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-        controller.enqueue(new TextEncoder().encode(eventString));
+        controller.enqueue(encoder.encode(eventString));
       }
       
       // Flag to track if stream has ended
@@ -35,6 +45,7 @@ export default async function handler(req) {
       
       // Create keep-alive timer
       let keepaliveInterval = null;
+      let lastEventTime = Date.now();
       
       try {
         // Handle OPTIONS request
@@ -79,26 +90,28 @@ export default async function handler(req) {
         }
         
         // Generate messageId
-        const messageId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-          const r = Math.random() * 16 | 0;
-          const v = c === 'x' ? r : (r & 0x3 | 0x8);
-          return v.toString(16);
-        });
-        
+        const messageId = crypto.randomUUID();
         console.log(`Generated message ID: ${messageId}`);
         
-        // Send start event
+        // Send start event immediately (crucial)
         writeEvent('stream_start', { message: 'Stream starting' });
         
+        // Setup frequently recurring keepalive to ensure the connection stays open
         // Send initial keepalive message right away
         writeEvent('keepalive', { timestamp: Date.now() / 1000 });
+        lastEventTime = Date.now();
         
-        // Setup keepalive interval
+        // Setup keepalive interval - frequent to prevent timeouts
         keepaliveInterval = setInterval(() => {
           try {
             if (!hasEnded) {
-              writeEvent('keepalive', { timestamp: Date.now() / 1000 });
-              console.log('Sent keepalive at', new Date().toISOString());
+              const now = Date.now();
+              // Only send if it's been more than 300ms since last event
+              if (now - lastEventTime > 300) {
+                writeEvent('keepalive', { timestamp: now / 1000 });
+                lastEventTime = now;
+                console.log('Sent keepalive at', new Date().toISOString());
+              }
             } else {
               clearInterval(keepaliveInterval);
             }
@@ -106,7 +119,7 @@ export default async function handler(req) {
             console.error('Error sending keepalive:', e);
             clearInterval(keepaliveInterval);
           }
-        }, 500); // Send keepalive every 500ms for more reliability
+        }, 500);
         
         // System prompt
         const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
@@ -119,10 +132,8 @@ export default async function handler(req) {
         console.log(`User content prepared, length: ${userContent.length}`);
         
         try {
-          console.log('Importing Anthropic...');
-          // Import Anthropic dynamically
-          const { Anthropic } = await import('@anthropic-ai/sdk');
           console.log('Creating Anthropic client...');
+          // Create Anthropic client
           const anthropic = new Anthropic({
             apiKey: apiKey
           });
@@ -146,7 +157,7 @@ export default async function handler(req) {
           }));
           
           // Add retry logic with exponential backoff
-          let maxRetries = 3; // Reduced from 5 to avoid multiple long-running attempts
+          let maxRetries = 3;
           let retryCount = 0;
           let backoffTime = 1000; // Start with 1 second (in ms)
           let success = false;
@@ -159,8 +170,8 @@ export default async function handler(req) {
               console.log(`Attempt ${retryCount + 1}/${maxRetries + 1} to create stream`);
               
               // Create controller to abort request if needed
-              const controller = new AbortController();
-              const signal = controller.signal;
+              const abortController = new AbortController();
+              const signal = abortController.signal;
               
               try {
                 // Add the signal to the options
@@ -173,6 +184,9 @@ export default async function handler(req) {
                 
                 // Process chunks
                 for await (const chunk of stream) {
+                  // Update last event time
+                  lastEventTime = Date.now();
+                  
                   // Skip processing if stream has ended
                   if (hasEnded) {
                     console.log('Stream already ended, stopping chunk processing');
@@ -246,6 +260,7 @@ export default async function handler(req) {
                 writeEvent('status', { 
                   message: `Anthropic API temporarily overloaded. Retrying in ${waitTime}s...`
                 });
+                lastEventTime = Date.now();
                 
                 await sleep(backoffTime);
                 backoffTime *= 2; // Exponential backoff
@@ -335,11 +350,12 @@ export default async function handler(req) {
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'X-Accel-Buffering': 'no' // Prevents buffering in some proxies
     }
   });
 }
