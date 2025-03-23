@@ -1180,21 +1180,19 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     
                                     // Handle content_complete event which should include usage statistics
                                     if (data.type === 'content_complete') {
-                                        console.log('Content complete received', data);
+                                        console.log('Content complete event received');
                                         
-                                        // If content is provided, use it
+                                        // Store the content but don't stop the timer yet
                                         if (data.content) {
+                                            console.log(`HTML content received in content_complete (length: ${data.content.length})`);
                                             generatedContent = data.content;
-                                            updateHtmlPreview(generatedContent);
-                                            
-                                            // Store the generated HTML
-                                            state.generatedHtml = generatedContent;
-                                            generatedHtml = generatedContent; // Update global variable too
+                                            state.generatedHtml = data.content;
+                                            updateHtmlPreview(data.content);
                                         }
                                         
-                                        // If usage statistics are provided, update the UI
+                                        // Update usage statistics if available, but don't stop the timer
                                         if (data.usage) {
-                                            console.log('Updating token stats with:', data.usage);
+                                            console.log('Updating token stats from content_complete event:', data.usage);
                                             updateTokenStats(data.usage);
                                             
                                             // Calculate cost if available
@@ -1232,18 +1230,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                             }
                                         }
                                         
-                                        // Mark as complete if we have both content and usage stats
-                                        if (data.content && data.usage) {
-                                            // Mark generation as completed to prevent further reconnects
-                                            isGenerationCompleted = true;
-                                            activeStream = false;
-                                            
-                                            // Final UI update
-                                            updateHtmlDisplay();
-                                            stopElapsedTimeCounter(); // Only stop the timer when we have both content and stats
-                                            clearInterval(keepaliveMonitor);
-                                        }
-                                        
+                                        // Do not mark as complete yet - wait for message_complete
                                         lastKeepAliveTime = Date.now();
                                         continue;
                                     }

@@ -488,19 +488,27 @@
                 <!-- Result Section -->
                 <div id="result-section" class="hidden mt-8">
                     <!-- Usage Stats -->
-                    <div id="stats-container" class="mb-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
-                        <h3 class="text-lg font-semibold mb-4">Usage Statistics</h3>
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <p class="text-gray-700 dark:text-gray-300">Input Tokens: <span id="input-tokens" class="font-medium">0</span></p>
-                                <p class="text-gray-700 dark:text-gray-300">Output Tokens: <span id="output-tokens" class="font-medium">0</span></p>
-                                <p class="text-gray-700 dark:text-gray-300">Total Cost: <span id="total-cost-current" class="font-medium">$0.00</span></p>
+                    <div class="bg-white rounded-lg shadow-md p-5">
+                        <h2 class="text-xl font-semibold mb-4 flex items-center">
+                            <i class="fas fa-chart-line text-primary-500 mr-2"></i>Usage Statistics
+                        </h2>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                            <div class="p-3 bg-gray-100 rounded-lg">
+                                <p class="text-sm text-gray-500">Input Tokens</p>
+                                <p id="input-tokens" class="text-lg font-semibold">-</p>
                             </div>
-                            <div>
-                                <p class="text-gray-700 dark:text-gray-300">Total Runs: <span id="total-runs" class="font-medium">0</span></p>
-                                <p class="text-gray-700 dark:text-gray-300">Total Tokens: <span id="total-tokens" class="font-medium">0</span></p>
-                                <p class="text-gray-700 dark:text-gray-300">Total Cost: <span id="total-cost" class="font-medium">$0.00</span></p>
+                            <div class="p-3 bg-gray-100 rounded-lg">
+                                <p class="text-sm text-gray-500">Output Tokens</p>
+                                <p id="output-tokens" class="text-lg font-semibold">-</p>
                             </div>
+                            <div class="p-3 bg-gray-100 rounded-lg">
+                                <p class="text-sm text-gray-500">Total Cost</p>
+                                <p id="total-cost" class="text-lg font-semibold">-</p>
+                            </div>
+                        </div>
+                        <div class="mt-3 text-xs text-gray-500">
+                            <i class="fas fa-info-circle text-primary-500 mr-2"></i>
+                            <span>This is an estimate based on the current model's pricing. Actual costs may vary.</span>
                         </div>
                     </div>
 
