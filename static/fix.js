@@ -1,0 +1,1 @@
+document.addEventListener('DOMContentLoaded', function() { const dropArea = document.getElementById('drop-area'); if (dropArea) { dropArea.addEventListener('click', function() { const fileUpload = document.getElementById('file-upload'); if (fileUpload) { fileUpload.click(); } }); dropArea.classList.add('cursor-pointer'); } });
