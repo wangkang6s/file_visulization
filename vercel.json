@@ -8,6 +8,13 @@
     {
       "src": "static/**",
       "use": "@vercel/static"
+    },
+    {
+      "src": "api/**",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 60
+      }
     }
   ],
   "routes": [
@@ -20,10 +27,5 @@
       "dest": "/server.py"
     }
   ],
-  "buildCommand": "chmod +x build_files.sh && ./build_files.sh",
-  "functions": {
-    "api/process-stream.js": {
-      "maxDuration": 60
-    }
-  }
+  "buildCommand": "chmod +x build_files.sh && ./build_files.sh"
 } 
