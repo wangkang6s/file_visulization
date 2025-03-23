@@ -1137,12 +1137,34 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
     let lastKeepAliveTime = Date.now(); // Track last keepalive
     const KEEPALIVE_TIMEOUT = 10000; // 10 seconds without keepalive would trigger reconnection
     
+    // Add flags to track streaming state to prevent duplicate requests
+    let isGenerationCompleted = false;
+    let isCurrentlyReconnecting = false;
+    let activeStream = true; // Track if we have an active stream processing
+    
     try {
         // Show streaming status
         setProcessingText('Connecting to Claude...');
         
         // Create a function to handle the streaming call
         const processStreamChunk = async (isReconnect = false, lastChunkId = null) => {
+            // Prevent multiple concurrent reconnects
+            if (isCurrentlyReconnecting) {
+                console.log('Already reconnecting, ignoring duplicate request');
+                return;
+            }
+            
+            // Don't reconnect if generation is already completed
+            if (isGenerationCompleted) {
+                console.log('Generation already completed, ignoring reconnect request');
+                return;
+            }
+            
+            // Set the reconnecting flag to prevent concurrent reconnects
+            if (isReconnect) {
+                isCurrentlyReconnecting = true;
+            }
+            
             console.log(`${isReconnect ? 'Reconnecting' : 'Starting'} stream${sessionId ? ' with session ID: ' + sessionId : ''}...`);
             
             // Display reconnection status if applicable
@@ -1212,19 +1234,23 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                         
                         // Increment reconnect attempts and try again
                         reconnectAttempts++;
-                        if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                        if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS && !isGenerationCompleted) {
+                            isCurrentlyReconnecting = false; // Reset reconnection flag
                             await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
                             return await processStreamChunk(true);
                         } else {
+                            isCurrentlyReconnecting = false;
                             throw new Error('Maximum reconnection attempts reached. Please try again later.');
                         }
                     }
                     
+                    isCurrentlyReconnecting = false;
                     throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
                 }
                 
                 // Reset reconnect attempts on successful connection
                 reconnectAttempts = 0;
+                isCurrentlyReconnecting = false;
                 
                 // Get a reader for the stream
                 const reader = response.body.getReader();
@@ -1234,7 +1260,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 let isStreamActive = true;
                 let keepaliveMonitor = setInterval(() => {
                     const now = Date.now();
-                    if (now - lastKeepAliveTime > KEEPALIVE_TIMEOUT && isStreamActive) {
+                    if (now - lastKeepAliveTime > KEEPALIVE_TIMEOUT && isStreamActive && activeStream && !isGenerationCompleted) {
                         console.warn('No keepalive received for', (now - lastKeepAliveTime) / 1000, 'seconds. Reconnecting...');
                         clearInterval(keepaliveMonitor);
                         isStreamActive = false;
@@ -1243,7 +1269,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                         reader.cancel('No keepalive received');
                         
                         // Only try to reconnect if we haven't completed
-                        if (!state.generatedHtml) {
+                        if (!isGenerationCompleted) {
                             reconnectAttempts++;
                             if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                                 processStreamChunk(true, lastChunkId).catch(console.error);
@@ -1327,6 +1353,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         state.generatedHtml = generatedContent;
                                         generatedHtml = generatedContent; // Update global variable too
                                         
+                                        // Mark generation as completed to prevent further reconnects
+                                        isGenerationCompleted = true;
+                                        activeStream = false;
+                                        
                                         // Final UI update
                                         updateHtmlDisplay();
                                         clearInterval(keepaliveMonitor);
@@ -1335,6 +1365,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     // Handle message complete from Vercel
                                     if (data.type === 'message_complete') {
                                         console.log('Message complete received');
+                                        
+                                        // Mark generation as completed to prevent further reconnects
+                                        isGenerationCompleted = true;
+                                        activeStream = false;
                                         
                                         // If html is provided directly, use it
                                         if (data.html) {
@@ -1391,6 +1425,13 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         }
                                     }
                                     
+                                    // Handle stream_end event
+                                    if (data.type === 'stream_end' || line.includes('event: stream_end')) {
+                                        console.log('Stream end event received');
+                                        isGenerationCompleted = true;
+                                        activeStream = false;
+                                    }
+                                    
                                     // Handle html field if present separately
                                     if (data.html && data.type !== 'message_complete') {
                                         console.log(`HTML content received directly (length: ${data.html.length})`);
@@ -1416,7 +1457,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                     }
                     
                     // For other errors, check if we need to reconnect
-                    if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                    if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS && !isGenerationCompleted) {
                         reconnectAttempts++;
                         await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
                         return await processStreamChunk(true, lastChunkId);
@@ -1425,28 +1466,38 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                     }
                 }
                 
+                // Set the active stream flag to false when we're done processing
+                activeStream = false;
+                
                 // If we got here, the stream completed successfully
                 // Make sure to update the state's generatedHtml property
-                state.generatedHtml = generatedContent;
-                
-                // Update the HTML display and preview with the final content
-                updateHtmlDisplay();
-                updatePreview();
-                
-                // Show the results section
-                showResultSection();
-                
-                // Complete the generation process
-                stopProcessingAnimation();
-                resetGenerationUI(true);
-                showToast('Website generation complete!', 'success');
+                if (!isGenerationCompleted) {
+                    state.generatedHtml = generatedContent;
+                    isGenerationCompleted = true;
+                    
+                    // Update the HTML display and preview with the final content
+                    updateHtmlDisplay();
+                    updatePreview();
+                    
+                    // Show the results section
+                    showResultSection();
+                    
+                    // Complete the generation process
+                    stopProcessingAnimation();
+                    resetGenerationUI(true);
+                    showToast('Website generation complete!', 'success');
+                }
                 
             } catch (error) {
+                // Reset the reconnecting flag
+                isCurrentlyReconnecting = false;
+                
                 // Check if this is a timeout error that we can recover from
                 if ((error.message.includes('FUNCTION_INVOCATION_TIMEOUT') || 
                     error.message.includes('timed out') ||
                     error.message.includes('Error: 504')) && 
-                    reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts <= MAX_RECONNECT_ATTEMPTS && 
+                    !isGenerationCompleted) {
                     console.log('Reconnecting due to timeout...');
                     reconnectAttempts++;
                     await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
@@ -1459,6 +1510,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
         };
         
         // Start the streaming process
+        activeStream = true;
         await processStreamChunk();
         
     } catch (error) {
