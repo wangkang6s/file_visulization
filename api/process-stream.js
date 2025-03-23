@@ -149,13 +149,14 @@ export default async function handler(req) {
               const signal = abortController.signal;
               
               try {
-                // Call Anthropic API directly
+                // Call Anthropic API directly with corrected headers and structure
                 const response = await fetch('https://api.anthropic.com/v1/messages', {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
                     'x-api-key': apiKey,
-                    'anthropic-version': '2023-06-01'
+                    'anthropic-version': '2023-06-01', // Required API version
+                    'anthropic-beta': 'messages-2023-12-15' // Optional beta features
                   },
                   body: JSON.stringify({
                     model: 'claude-3-5-sonnet-20240620',
@@ -163,13 +164,18 @@ export default async function handler(req) {
                     temperature: temperature,
                     system: systemPrompt,
                     messages: [{ role: 'user', content: userContent }],
-                    stream: true
+                    stream: true,
+                    thinking: { 
+                      type: "enabled", 
+                      budget_tokens: thinkingBudget 
+                    }
                   }),
                   signal
                 });
                 
                 if (!response.ok) {
                   const errorText = await response.text();
+                  console.error('Anthropic API error response:', errorText);
                   throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
                 }
                 
@@ -178,6 +184,7 @@ export default async function handler(req) {
                 // Process the response as a stream
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                let buffer = ''; // Buffer to handle partial chunks
                 
                 // Process chunks
                 while (true) {
@@ -194,56 +201,87 @@ export default async function handler(req) {
                   
                   // Decode the chunk
                   const chunk = decoder.decode(value, { stream: true });
+                  buffer += chunk;
                   
-                  // Parse the chunk - it's a series of SSE lines that need to be parsed
-                  const lines = chunk.split('\n');
+                  // Split on double newlines to get complete SSE events
+                  const events = buffer.split('\n\n');
                   
-                  for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                      const data = line.slice(6);
-                      
-                      // Anthropic sends [DONE] when streaming is complete
-                      if (data === '[DONE]') {
-                        console.log('Received [DONE] marker');
-                        break;
+                  // Process all complete events, and keep the last partial event in the buffer
+                  buffer = events.pop() || '';
+                  
+                  for (const event of events) {
+                    if (!event.trim()) continue;
+                    
+                    const lines = event.split('\n');
+                    let eventType = '';
+                    let eventData = '';
+                    
+                    // Extract event type and data
+                    for (const line of lines) {
+                      if (line.startsWith('event:')) {
+                        eventType = line.slice(6).trim();
+                      } else if (line.startsWith('data:')) {
+                        eventData = line.slice(5).trim();
                       }
+                    }
+                    
+                    // Skip if no data
+                    if (!eventData) continue;
+                    
+                    // Handle ping events specially
+                    if (eventType === 'ping') {
+                      console.log('Received ping event');
+                      continue;
+                    }
+                    
+                    try {
+                      const parsed = JSON.parse(eventData);
                       
-                      try {
-                        const parsed = JSON.parse(data);
+                      // Process content block delta (the text chunks)
+                      if (parsed.type === 'content_block_delta' && 
+                          parsed.delta && 
+                          parsed.delta.type === 'text_delta') {
+                        const textChunk = parsed.delta.text;
+                        htmlOutput += textChunk;
+                        chunkCount++;
                         
-                        // Process different types of events
-                        if (parsed.type === 'content_block_delta' && parsed.delta.type === 'text') {
-                          const textChunk = parsed.delta.text;
-                          htmlOutput += textChunk;
-                          chunkCount++;
-                          
-                          // Send chunk in content_block_delta format to match server.py
-                          writeEvent('content', { 
-                            type: 'content_block_delta', 
-                            delta: { text: escape(textChunk) },
-                            chunk_id: `${messageId}-${chunkCount}`
-                          });
-                          
-                          // Log every 20th chunk
-                          if (chunkCount % 20 === 0) {
-                            console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
-                          }
+                        // Send chunk in content_block_delta format to match server.py
+                        writeEvent('content', { 
+                          type: 'content_block_delta', 
+                          delta: { text: escape(textChunk) },
+                          chunk_id: `${messageId}-${chunkCount}`
+                        });
+                        
+                        // Log every 20th chunk
+                        if (chunkCount % 20 === 0) {
+                          console.log(`Processed ${chunkCount} chunks so far, current chunk length: ${textChunk.length}`);
                         }
-                        // Handle thinking updates if available
-                        else if (parsed.type === 'thinking') {
-                          console.log('Received thinking update');
-                          writeEvent('content', { 
-                            type: 'thinking_update', 
-                            thinking: { 
-                              content: escape(parsed.thinking ? parsed.thinking.content : '') 
-                            },
-                            chunk_id: `${messageId}-thinking-${chunkCount}`
-                          });
-                        }
-                      } catch (parseError) {
-                        console.error('Error parsing chunk:', parseError);
-                        // Continue processing other chunks even if one fails
                       }
+                      // Handle thinking block
+                      else if (parsed.type === 'content_block_delta' && 
+                               parsed.delta && 
+                               parsed.delta.type === 'thinking_delta') {
+                        console.log('Received thinking update');
+                        writeEvent('content', { 
+                          type: 'thinking_update', 
+                          thinking: { 
+                            content: escape(parsed.delta.thinking || '') 
+                          },
+                          chunk_id: `${messageId}-thinking-${chunkCount}`
+                        });
+                      }
+                      // Handle message completion
+                      else if (parsed.type === 'message_stop') {
+                        console.log('Received message_stop event');
+                        success = true;
+                      }
+                      // Handle other events
+                      else {
+                        console.log(`Received event of type: ${eventType} with type: ${parsed.type}`);
+                      }
+                    } catch (parseError) {
+                      console.error('Error parsing event data:', parseError, 'for event data:', eventData);
+                      // Continue processing other events even if one fails
                     }
                   }
                 }
@@ -274,7 +312,7 @@ export default async function handler(req) {
                                  (error.response && error.response.status === 529) ||
                                  (error.message && error.message.includes('529'));
               
-              if (isOverloaded && retryCount < maxRetries) {
+              if ((isOverloaded || error.message.includes('429')) && retryCount < maxRetries) {
                 retryCount++;
                 const waitTime = backoffTime / 1000; // Convert to seconds for display
                 
