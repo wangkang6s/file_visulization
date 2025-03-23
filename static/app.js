@@ -1270,6 +1270,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                 if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
                                     generatedContent += data.delta.text;
                                     updateHtmlPreview(generatedContent);
+                                    continue;
                                 }
                                 
                                 // Save chunk ID for potential reconnection
@@ -1292,11 +1293,18 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                 if (data.type === 'message_complete') {
                                     console.log('Message complete received');
                                     
+                                    // If html is provided directly, use it
+                                    if (data.html) {
+                                        console.log(`HTML content received in message_complete (length: ${data.html.length})`);
+                                        generatedContent = data.html;
+                                    }
+                                    
                                     // Ensure we store the generated HTML
                                     state.generatedHtml = generatedContent;
                                     generatedHtml = generatedContent; // Update global variable too
                                     
                                     // Final UI update
+                                    updateHtmlPreview(generatedContent);
                                     updateHtmlDisplay();
                                     
                                     // Update usage statistics
@@ -1339,8 +1347,9 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     }
                                 }
                                 
-                                // Handle html field if present
-                                if (data.html) {
+                                // Handle html field if present separately
+                                if (data.html && data.type !== 'message_complete') {
+                                    console.log(`HTML content received directly (length: ${data.html.length})`);
                                     generatedContent = data.html;
                                     state.generatedHtml = data.html;
                                     updateHtmlPreview(generatedContent);
@@ -1400,6 +1409,7 @@ function updateHtmlPreview(html) {
     try {
         // For large content, use incremental iframe updates
         const htmlLength = html.length;
+        console.log(`Updating HTML preview with content length: ${htmlLength}`);
         
         if (htmlLength > MAX_HTML_BUFFER_SIZE) {
             // Only update the preview iframe in incremental mode for large content
@@ -1451,15 +1461,26 @@ function updateHtmlPreview(html) {
             }
         } else {
             // For smaller content, use normal update method
-            elements.htmlOutput.value = html;
+            if (elements.htmlOutput) {
+                elements.htmlOutput.value = html;
+            } else {
+                console.warn('HTML output element not found, but continuing with iframe update');
+            }
             
             // Update the preview iframe
             const iframe = document.getElementById('preview-iframe');
             if (iframe) {
-                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                iframeDoc.open();
-                iframeDoc.write(html);
-                iframeDoc.close();
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    iframeDoc.open();
+                    iframeDoc.write(html);
+                    iframeDoc.close();
+                    console.log('Preview iframe updated successfully');
+                } catch (iframeError) {
+                    console.error('Error updating iframe:', iframeError);
+                }
+            } else {
+                console.error('Preview iframe element not found');
             }
         }
     } catch (error) {
