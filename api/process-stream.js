@@ -473,11 +473,33 @@ export default async function handler(req) {
 </html>`;
             }
             
+            // Calculate approximate token usage for analytics
+            const contentLength = content.length;
+            const outputLength = finalHtml.length;
+            // Rough token estimates based on character count (about 4 chars per token)
+            const inputTokens = Math.ceil(contentLength / 4);
+            const outputTokens = Math.ceil(outputLength / 4);
+            const totalCost = (inputTokens / 1000000) * 3.0 + (outputTokens / 1000000) * 15.0;
+            
+            // Include token usage in the event
+            const usage = {
+              input_tokens: inputTokens,
+              output_tokens: outputTokens,
+              total_cost: totalCost
+            };
+            
             // Send complete content event with the full HTML
             writeEvent('content_complete', { 
               content: finalHtml,
               length: finalHtml.length,
-              chunks: chunkCount
+              chunks: chunkCount,
+              usage: usage
+            });
+            
+            // Send message_complete event with usage statistics
+            writeEvent('message_complete', {
+              message: 'Content generation complete',
+              usage: usage
             });
             
             console.log(`Content complete sent, length: ${finalHtml.length}`);
@@ -503,10 +525,26 @@ export default async function handler(req) {
 </body>
 </html>`;
             
+            // Calculate approximate token usage for analytics
+            const fallbackContentLength = content.length;
+            const fallbackOutputLength = fallbackHtml.length;
+            // Rough token estimates based on character count (about 4 chars per token)
+            const fallbackInputTokens = Math.ceil(fallbackContentLength / 4);
+            const fallbackOutputTokens = Math.ceil(fallbackOutputLength / 4);
+            const fallbackTotalCost = (fallbackInputTokens / 1000000) * 3.0 + (fallbackOutputTokens / 1000000) * 15.0;
+            
+            // Include token usage in the event
+            const fallbackUsage = {
+              input_tokens: fallbackInputTokens,
+              output_tokens: fallbackOutputTokens,
+              total_cost: fallbackTotalCost
+            };
+            
             writeEvent('content_complete', { 
               content: fallbackHtml,
               length: fallbackHtml.length,
-              chunks: 0
+              chunks: 0,
+              usage: fallbackUsage
             });
             
             console.log(`Fallback content sent, length: ${fallbackHtml.length}`);
@@ -552,10 +590,26 @@ export default async function handler(req) {
 </body>
 </html>`;
           
+          // Calculate approximate token usage for analytics
+          const errorContentLength = content.length;
+          const errorOutputLength = errorHtml.length;
+          // Rough token estimates based on character count (about 4 chars per token)
+          const errorInputTokens = Math.ceil(errorContentLength / 4);
+          const errorOutputTokens = Math.ceil(errorOutputLength / 4);
+          const errorTotalCost = (errorInputTokens / 1000000) * 3.0 + (errorOutputTokens / 1000000) * 15.0;
+          
+          // Include token usage in the event
+          const errorUsage = {
+            input_tokens: errorInputTokens,
+            output_tokens: errorOutputTokens,
+            total_cost: errorTotalCost
+          };
+          
           writeEvent('content_complete', { 
             content: errorHtml,
             length: errorHtml.length,
-            chunks: 0
+            chunks: 0,
+            usage: errorUsage
           });
         } finally {
           // Ensure timer is cleaned up
@@ -599,10 +653,26 @@ export default async function handler(req) {
 </body>
 </html>`;
           
+          // Calculate approximate token usage for analytics
+          const fatalContentLength = content ? content.length : 0;
+          const fatalOutputLength = fatalErrorHtml.length;
+          // Rough token estimates based on character count (about 4 chars per token)
+          const fatalInputTokens = Math.ceil(fatalContentLength / 4);
+          const fatalOutputTokens = Math.ceil(fatalOutputLength / 4);
+          const fatalTotalCost = (fatalInputTokens / 1000000) * 3.0 + (fatalOutputTokens / 1000000) * 15.0;
+          
+          // Include token usage in the event
+          const fatalUsage = {
+            input_tokens: fatalInputTokens,
+            output_tokens: fatalOutputTokens,
+            total_cost: fatalTotalCost
+          };
+          
           writeEvent('content_complete', { 
             content: fatalErrorHtml,
             length: fatalErrorHtml.length,
-            chunks: 0
+            chunks: 0,
+            usage: fatalUsage
           });
         } catch (_) {
           console.error('Failed to send error event');
