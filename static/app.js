@@ -144,11 +144,11 @@ function init() {
     // Setup event listeners
     setupEventListeners();
     
-    // Setup drag and drop
-    setupDragAndDrop();
+    // Set text input as active
+    state.activeTab = 'text';
     
     // Initialize state
-    if (elements.fileTab) elements.fileTab.click(); // Default to file tab
+    updateGenerateButtonState();
     
     // Load and display usage statistics
     loadUsageStatistics();
@@ -251,51 +251,17 @@ function resetUsageStatistics() {
 
 // Event listeners
 function setupEventListeners() {
-    // Theme toggle - enforce light theme
-    if (elements.themeToggle) {
-        elements.themeToggle.addEventListener('click', function() {
-            // Always use light theme
-            document.documentElement.classList.remove('dark');
-            localStorage.setItem('theme', 'light');
-            
-            toggleTheme();
-        });
+    console.log("Setting up event listeners...");
+    
+    // API key input
+    if (elements.apiKeyInput) {
+        elements.apiKeyInput.addEventListener('input', handleApiKeyInput);
+        elements.apiKeyInput.addEventListener('blur', validateApiKey);
     }
     
-    // API Key validation
+    // API key validate button
     if (elements.validateKeyBtn) {
         elements.validateKeyBtn.addEventListener('click', validateApiKey);
-    }
-    
-    // Load saved API key
-    if (elements.apiKeyInput) {
-        // Try to load from localStorage
-        const savedKey = localStorage.getItem(API_KEY_STORAGE_KEY);
-        if (savedKey) {
-            elements.apiKeyInput.value = savedKey;
-            // Validate the key on page load
-            setTimeout(validateApiKey, 1000); // Delay to allow the page to load
-        }
-        
-        elements.apiKeyInput.addEventListener('input', handleApiKeyInput);
-    }
-    
-    // Tab switching
-    if (elements.fileTab) {
-        elements.fileTab.addEventListener('click', function() {
-            switchTab('file');
-        });
-    }
-    
-    if (elements.textTab) {
-        elements.textTab.addEventListener('click', function() {
-            switchTab('text');
-        });
-    }
-    
-    // File upload
-    if (elements.fileUpload) {
-        elements.fileUpload.addEventListener('change', handleFileUpload);
     }
     
     // Text input
@@ -350,18 +316,7 @@ function setupEventListeners() {
         document.body.classList.add('ios-device');
     }
     
-    // Test mode toggle
-    if (elements.testModeToggle) {
-        elements.testModeToggle.addEventListener('change', toggleTestMode);
-        
-        // Initialize from localStorage
-        const savedTestMode = localStorage.getItem('test_mode') === 'true';
-        if (savedTestMode) {
-            elements.testModeToggle.checked = true;
-            state.testMode = true;
-            showTestModeIndicator();
-        }
-    }
+    console.log("Event listeners set up");
 }
 
 // Toggle theme between light and dark
@@ -825,18 +780,19 @@ function formatFileSize(bytes) {
 
 // Text Input
 function handleTextInput(e) {
-    console.log('Handling text input...');
-    const newText = e.target.value.trim();
-    state.textContent = newText;
-    updateGenerateButtonState();
+    const text = e.target.value.trim();
+    state.textContent = text;
     
-    // Always analyze tokens for text input when the content changes
-    if (newText) {
-        analyzeTokens(newText);
+    console.log(`Text input updated, length: ${text.length}`);
+    
+    // Analyze tokens for the new text content
+    if (text) {
+        analyzeTokens(text);
     } else if (elements.tokenInfo) {
-        // Clear token info if text is empty
         elements.tokenInfo.innerHTML = '';
     }
+    
+    updateGenerateButtonState();
 }
 
 // Parameter Controls
@@ -893,16 +849,12 @@ function resetThinkingBudget() {
 
 // Generate Button State
 function updateGenerateButtonState() {
-    console.log('updateGenerateButtonState called');
-    console.log('API Key:', state.apiKey ? 'Exists (length: ' + state.apiKey.length + ')' : 'Missing');
-    console.log('File content:', state.fileContent ? 'Exists (length: ' + state.fileContent.length + ')' : 'Missing');
-    console.log('Text content:', state.textContent ? 'Exists (length: ' + state.textContent.length + ')' : 'Missing');
+    console.log('Updating generate button state...');
     console.log('Active tab:', state.activeTab);
     
     // Make sure we have API key and content
     const hasApiKey = !!state.apiKey;
-    const hasContent = (state.activeTab === 'file' && !!state.fileContent) || 
-                       (state.activeTab === 'text' && !!state.textContent);
+    const hasContent = state.textContent || (elements.inputText && elements.inputText.value.trim());
     
     console.log('Has API key:', hasApiKey, 'Has content:', hasContent);
     
@@ -947,14 +899,6 @@ async function generateWebsite() {
         return;
     }
     
-    // Debug info for file uploads
-    if (state.activeTab === 'file' && state.file) {
-        console.log('Generating with file:', state.fileName);
-        console.log('File content stored (first 100 chars):', 
-                    state.fileContent ? state.fileContent.substring(0, 100) + '...' : 'No content stored');
-        console.log('File size:', state.file ? formatFileSize(state.file.size) : 'Unknown');
-    }
-    
     try {
         state.processing = true;
         
@@ -969,18 +913,13 @@ async function generateWebsite() {
         // Start timing the generation
         startElapsedTimeCounter();
         
-        // Get the source content (text or file content)
+        // Get the text content
         let content = '';
-        if (state.activeTab === 'text') {
-            // Use the correct element reference (inputText instead of textInput)
-            // and also check state.textContent as a fallback
-            content = elements.inputText ? elements.inputText.value.trim() : (state.textContent || '');
-        } else if (state.activeTab === 'file' && state.fileContent) {
-            content = state.fileContent;
-        }
+        // Use the correct element reference and also check state.textContent as a fallback
+        content = elements.inputText ? elements.inputText.value.trim() : (state.textContent || '');
         
         if (!content) {
-            throw new Error('Please enter some text or upload a file first');
+            throw new Error('Please enter some text first');
         }
         
         // Get other parameters
@@ -1012,114 +951,12 @@ async function generateWebsite() {
         // Show processing animation
         startProcessingAnimation();
         
-        // Check if test mode is enabled
-        if (state.testMode) {
-            // Use test mode API endpoint
-            const endpointUrl = window.location.hostname === 'localhost' ? 
-                '/api/test-generate' : '/api/test-generate';
-                
-            // Call test endpoint
-            try {
-                const response = await fetch(endpointUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        api_key: apiKey,
-                        content: content,
-                        format_prompt: formatPrompt,
-                        temperature: temperature,
-                        max_tokens: maxTokens,
-                        thinking_budget: thinkingBudget
-                    })
-                });
-                
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
-                }
-                
-                const result = await response.json();
-                
-                // Check if the result indicates an error but includes HTML
-                if (!result.success && result.html) {
-                    console.log('Test generate returned an error with HTML:', result.error);
-                    // Still use the HTML even though it's an error response
-                    state.generatedHtml = result.html;
-                    generatedHtml = result.html; // Update global variable too
-                    
-                    // Show the error message
-                    if (result.code === 529) {
-                        showToast('Anthropic API is currently overloaded. Please try again later.', 'error');
-                    } else {
-                        showToast(`Error: ${result.error}`, 'error');
-                    }
-                } else {
-                    // Process the successful test result
-                    state.generatedHtml = result.html;
-                    generatedHtml = result.html; // Update global variable too
-                }
-                
-                // Update UI with the results
-                updateHtmlDisplay();
-                updatePreview();
-                
-                // Update usage statistics
-                if (result.usage) {
-                    updateTokenStats(result.usage);
-                    
-                    // Update storage with new usage stats
-                    try {
-                        // Get existing stats
-                        const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
-                        
-                        // Update stats
-                        existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
-                        existingStats.totalTokens = (existingStats.totalTokens || 0) + 
-                            (result.usage.input_tokens + result.usage.output_tokens);
-                        existingStats.totalCost = (existingStats.totalCost || 0) + result.usage.total_cost;
-                        
-                        // Save updated stats
-                        localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
-                        
-                        // Update UI if stats container exists
-                        if (document.getElementById('total-runs')) {
-                            document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
-                        }
-                        if (document.getElementById('total-tokens')) {
-                            document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
-                        }
-                        if (document.getElementById('total-cost')) {
-                            document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
-                        }
-                    } catch (e) {
-                        console.error('Error updating usage statistics:', e);
-                    }
-                }
-                
-                // Update UI for generation completion
-                stopProcessingAnimation();
-                resetGenerationUI(true);
-                
-                // Show elapsed time
-                if (result.usage && result.usage.time_elapsed) {
-                    displayElapsedTime(Math.floor(result.usage.time_elapsed));
-                }
-                
-                showToast('Test visualization complete! (Test Mode)', 'success');
-                
-            } catch (error) {
-                console.error('Test generation error:', error);
-                showToast(`Error: ${error.message}`, 'error');
-                resetGenerationUI();
-            }
-        } else {
-            // Use regular generation with streaming
-            await generateHTMLStreamWithReconnection(
-                apiKey, content, formatPrompt, 
-                'claude-3-7-sonnet-20240307', maxTokens, 
-                temperature, thinkingBudget
-            );
-        }
+        // Use regular generation with streaming
+        await generateHTMLStreamWithReconnection(
+            apiKey, content, formatPrompt, 
+            'claude-3-7-sonnet-20240307', maxTokens, 
+            temperature, thinkingBudget
+        );
     } catch (error) {
         console.error('Generation error:', error);
         showToast(`Error: ${error.message}`, 'error');
@@ -1349,12 +1186,62 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                         if (data.content) {
                                             generatedContent = data.content;
                                             updateHtmlPreview(generatedContent);
+                                            
+                                            // Store the generated HTML
+                                            state.generatedHtml = generatedContent;
+                                            generatedHtml = generatedContent; // Update global variable too
                                         }
                                         
                                         // If usage statistics are provided, update the UI
                                         if (data.usage) {
                                             console.log('Updating token stats with:', data.usage);
                                             updateTokenStats(data.usage);
+                                            
+                                            // Calculate cost if available
+                                            const totalCost = data.usage.total_cost || 
+                                                ((data.usage.input_tokens / 1000000) * 3.0 + 
+                                                 (data.usage.output_tokens / 1000000) * 15.0);
+                                            elements.totalCost.textContent = formatCostDisplay(totalCost);
+                                            
+                                            // Update storage with new usage stats
+                                            try {
+                                                // Get existing stats
+                                                const existingStats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
+                                                
+                                                // Update stats
+                                                existingStats.totalRuns = (existingStats.totalRuns || 0) + 1;
+                                                existingStats.totalTokens = (existingStats.totalTokens || 0) + 
+                                                    (data.usage.input_tokens + data.usage.output_tokens);
+                                                existingStats.totalCost = (existingStats.totalCost || 0) + totalCost;
+                                                
+                                                // Save updated stats
+                                                localStorage.setItem('fileVisualizerStats', JSON.stringify(existingStats));
+                                                
+                                                // Update UI if stats container exists
+                                                if (document.getElementById('total-runs')) {
+                                                    document.getElementById('total-runs').textContent = existingStats.totalRuns.toLocaleString();
+                                                }
+                                                if (document.getElementById('total-tokens')) {
+                                                    document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
+                                                }
+                                                if (document.getElementById('total-cost')) {
+                                                    document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
+                                                }
+                                            } catch (e) {
+                                                console.error('Error updating usage statistics:', e);
+                                            }
+                                        }
+                                        
+                                        // Mark as complete if we have both content and usage stats
+                                        if (data.content && data.usage) {
+                                            // Mark generation as completed to prevent further reconnects
+                                            isGenerationCompleted = true;
+                                            activeStream = false;
+                                            
+                                            // Final UI update
+                                            updateHtmlDisplay();
+                                            stopElapsedTimeCounter(); // Only stop the timer when we have both content and stats
+                                            clearInterval(keepaliveMonitor);
                                         }
                                         
                                         lastKeepAliveTime = Date.now();

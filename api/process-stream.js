@@ -4,710 +4,420 @@ export const config = {
   regions: ['iad1'], // Force specific US region for more consistent performance
 };
 
-export default async function handler(req) {
-  // Create a new ReadableStream with a controller to manage the flow
-  const stream = new ReadableStream({
-    async start(controller) {
-      // Create TextEncoder once
-      const encoder = new TextEncoder();
+// Delayed content completion function to ensure we send usage statistics
+const sendContentComplete = async (res, html, usage, stopTime) => {
+  try {
+    // Calculate time elapsed
+    const timeElapsed = stopTime ? (stopTime - startTime) / 1000 : undefined;
+    
+    // Create usage object with all token information
+    const usageData = {
+      ...usage,
+      time_elapsed: timeElapsed
+    };
+    
+    console.log('Sending content_complete event with usage stats:', JSON.stringify(usageData));
+    console.log(`Generated content length: ${html.length} characters`);
+    
+    // Send the content complete event with both content and usage stats
+    res.write(`data: ${JSON.stringify({
+      type: 'content_complete',
+      content: html,
+      usage: usageData
+    })}\n\n`);
+    
+    // Small delay before sending message_complete to ensure the client processes the content_complete
+    setTimeout(() => {
+      // Send the final message
+      res.write(`data: ${JSON.stringify({
+        type: 'message_complete',
+        message: 'Generation complete',
+        usage: usageData
+      })}\n\n`);
       
-      // Function to write event to stream
-      function writeEvent(eventType, data) {
-        // Format in the SSE format expected by the client
-        const eventString = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-        controller.enqueue(encoder.encode(eventString));
-      }
-      
-      // Flag to track if stream has ended
-      let hasEnded = false;
-      
-      // Function to safely end the stream
-      function safeEndStream() {
-        if (!hasEnded) {
-          try {
-            console.log('Safely ending stream');
-            writeEvent('stream_end', { message: 'Stream complete' });
-            controller.close();
-            hasEnded = true;
-          } catch (e) {
-            console.error('Error ending stream:', e);
-          }
-        }
-      }
-      
-      // Function to wait
-      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-      
-      // Start time for tracking elapsed time
-      const startTime = Date.now();
-      
-      // Create keep-alive timer
-      let keepaliveInterval = null;
-      let lastEventTime = Date.now();
-      
-      try {
-        // Handle OPTIONS request
-        if (req.method === 'OPTIONS') {
-          safeEndStream();
-          return;
-        }
-        
-        // Only allow POST requests
-        if (req.method !== 'POST') {
-          writeEvent('error', { error: 'Method not allowed' });
-          safeEndStream();
-          return;
-        }
-        
-        // Log the start of the request
-        console.log('Process-stream request received');
-        
-        // Get content from request body
-        const body = await req.json();
-        const content = body.content || body.source || '';
-        const apiKey = body.api_key || '';
-        const maxTokens = body.max_tokens || 128000;
-        const thinkingBudget = body.thinking_budget || 32000;
-        const temperature = body.temperature || 0.5;
-        const formatPrompt = body.format_prompt || '';
-        const testMode = body.test_mode === true;
-        const fileName = body.file_name || '';
-        const fileType = body.file_type || '';
-        
-        console.log(`Request params: content length: ${content.length}, maxTokens: ${maxTokens}, temperature: ${temperature}, testMode: ${testMode}, fileType: ${fileType}`);
-        
-        if (!content) {
-          console.error('Content is required but was empty');
-          writeEvent('error', { error: 'Content is required' });
-          safeEndStream();
-          return;
-        }
-        
-        if (!apiKey || !apiKey.startsWith('sk-ant')) {
-          console.error('Invalid API key format');
-          writeEvent('error', { error: 'Valid API key required' });
-          safeEndStream();
-          return;
-        }
-        
-        // Generate messageId
-        const messageId = crypto.randomUUID();
-        console.log(`Generated message ID: ${messageId}`);
-        
-        // Send start event immediately (crucial)
-        writeEvent('stream_start', { message: 'Stream starting' });
-        
-        // Setup frequently recurring keepalive to ensure the connection stays open
-        // Send initial keepalive message right away
-        writeEvent('keepalive', { timestamp: Date.now() / 1000 });
-        lastEventTime = Date.now();
-        
-        // Setup keepalive interval - frequent to prevent timeouts
-        keepaliveInterval = setInterval(() => {
-          try {
-            if (!hasEnded) {
-              const now = Date.now();
-              // Only send if it's been more than 300ms since last event
-              if (now - lastEventTime > 300) {
-                writeEvent('keepalive', { timestamp: now / 1000 });
-                lastEventTime = now;
-                console.log('Sent keepalive at', new Date().toISOString());
-              }
-            } else {
-              clearInterval(keepaliveInterval);
-            }
-          } catch (e) {
-            console.error('Error sending keepalive:', e);
-            clearInterval(keepaliveInterval);
-          }
-        }, 500);
-        
-        // System prompt - use the full prompt for best results
-        const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.Your output is only one HTML file, do not present any other notes on the HTML.).";
-        
-        // Format user content - use smaller chunk for Vercel and simplify
-        let userContent;
-        if (testMode) {
-          // For test mode, use minimal content
-          userContent = `This is a test mode request. Generate a simple HTML page saying "Test successful".`;
-        } else {
-          // For regular mode, use a smaller portion of content for Vercel
-          let contentToUse = content;
-          
-          // Special handling for PDF files that are base64 encoded
-          if (fileType === 'pdf') {
-            // If it's a PDF, we need to tell Claude that we're providing a base64-encoded PDF
-            userContent = formatPrompt ? 
-              `${formatPrompt}\n\nI'm providing a base64-encoded PDF file named "${fileName || 'document.pdf'}". The file content is too complex to decode in this environment. Please create a visualization based on what you know about PDFs and their common formats, creating a generic PDF viewer interface. Include placeholder content that indicates this is a PDF visualization.` :
-              `I'm providing a base64-encoded PDF file named "${fileName || 'document.pdf'}". The file content is too complex to decode in this environment. Please create a visualization based on what you know about PDFs and their common formats, creating a generic PDF viewer interface. Include placeholder content that indicates this is a PDF visualization.`;
-          } else {
-            // For regular text content
-            const contentSample = contentToUse.substring(0, Math.min(contentToUse.length, 20000));
-            userContent = formatPrompt ? 
-              `${formatPrompt}\n\nGenerate HTML for this content: ${contentSample}` :
-              `Generate HTML for this content: ${contentSample}`;
-          }
-        }
-        
-        console.log(`User content prepared, length: ${userContent.length}`);
-        
-        try {
-          console.log('Preparing to call Anthropic API directly...');
-          
-          // Add retry logic with exponential backoff
-          let maxRetries = 3;
-          let retryCount = 0;
-          let backoffTime = 1000; // Start with 1 second (in ms)
-          let success = false;
-          let htmlOutput = '';
-          let chunkCount = 0;
-          
-          // Use the correct Claude 3.7 model as requested
-          const model = testMode ? 'claude-3-haiku-20240307' : 'claude-3-7-sonnet-20250219';
-          const tokenLimit = testMode ? 1000 : 60000;
-          
-          writeEvent('status', {
-            message: `Using model: ${model} with max tokens: ${tokenLimit}`
-          });
-          
-          while (retryCount <= maxRetries && !success && !hasEnded) {
-            try {
-              console.log(`Attempt ${retryCount + 1}/${maxRetries + 1} to create stream`);
-              
-              // Create controller to abort request if needed
-              const abortController = new AbortController();
-              const signal = abortController.signal;
-              
-              // For debugging - generate a simple HTML directly instead of calling the API
-              if (testMode) {
-                console.log('Using test mode - generating simple HTML');
-                
-                // Create a simple HTML file
-                htmlOutput = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Generated Test Visualization</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #3b82f6; }
-  </style>
-</head>
-<body>
-  <h1>Test Visualization Generated Successfully</h1>
-  <p>This is a test HTML file generated directly from the Vercel serverless function.</p>
-  <p>Your content length: ${content.length} characters</p>
-  <p>Generated at: ${new Date().toISOString()}</p>
-</body>
-</html>`;
-                
-                // Send some fake chunks to simulate streaming
-                for (let i = 0; i < 3; i++) {
-                  await sleep(300);
-                  writeEvent('content', {
-                    type: 'content_block_delta',
-                    chunk_id: `${messageId}_${i}`,
-                    delta: {
-                      text: `Chunk ${i} of test HTML...`
-                    }
-                  });
-                  
-                  writeEvent('keepalive', {
-                    timestamp: Date.now() / 1000,
-                    chunk_count: i
-                  });
-                }
-                
-                success = true;
-                break;
-              }
-              
-              // Send status update to client
-              writeEvent('status', {
-                message: `Connecting to Anthropic API...`
-              });
-              
-              // Log the exact request we're about to make (debugging)
-              const requestBody = {
-                model: model,
-                max_tokens: tokenLimit,
-                temperature: temperature,
-                system: systemPrompt,
-                messages: [{ role: 'user', content: userContent }],
-                stream: true
-              };
-              
-              // Don't log the entire content, just length
-              console.log(`API request: model=${model}, max_tokens=${tokenLimit}, content_length=${userContent.length}`);
-              
-              // Call Anthropic API with correct headers for Claude 3.7
-              const response = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-api-key': apiKey,
-                  'anthropic-version': '2023-06-01'
-                },
-                body: JSON.stringify(requestBody),
-                signal
-              }).catch(error => {
-                console.error('Fetch API error:', error);
-                throw error;
-              });
-              
-              if (!response.ok) {
-                const errorText = await response.text();
-                console.error(`Anthropic API error: ${response.status}`, errorText);
-                writeEvent('status', {
-                  message: `API error: ${response.status} - ${errorText.substring(0, 100)}`
-                });
-                throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
-              }
-              
-              console.log('Stream created, processing chunks...');
-              
-              // Process the response as a stream
-              const reader = response.body.getReader();
-              const decoder = new TextDecoder();
-              let buffer = ''; // Buffer to handle partial chunks
-              
-              // Send status update
-              writeEvent('status', {
-                message: 'Connected to API, receiving response...'
-              });
-              
-              // Process chunks in a try-catch block
-              try {
-                // Process chunks
-                while (true) {
-                  const { done, value } = await reader.read();
-                  
-                  // Update last event time
-                  lastEventTime = Date.now();
-                  
-                  // Skip processing if stream has ended or done
-                  if (done || hasEnded) {
-                    console.log('Stream ended or closed');
-                    break;
-                  }
-                  
-                  // Decode the chunk
-                  const chunk = decoder.decode(value, { stream: true });
-                  buffer += chunk;
-                  
-                  // For debugging, log raw chunk data occasionally
-                  if (chunkCount % 20 === 0) {
-                    console.log(`Raw chunk data (first 100 chars): ${chunk.substring(0, 100)}`);
-                  }
-                  
-                  // Split on double newlines to get complete SSE events
-                  const events = buffer.split('\n\n');
-                  
-                  // Process all complete events, and keep the last partial event in the buffer
-                  buffer = events.pop() || '';
-                  
-                  for (const event of events) {
-                    if (!event.trim()) continue;
-                    
-                    const lines = event.split('\n');
-                    let eventType = '';
-                    let eventData = '';
-                    
-                    // Extract event type and data
-                    for (const line of lines) {
-                      if (line.startsWith('event:')) {
-                        eventType = line.slice(6).trim();
-                      } else if (line.startsWith('data:')) {
-                        eventData = line.slice(5).trim();
-                      }
-                    }
-                    
-                    // Skip if no data
-                    if (!eventData) continue;
-                    
-                    // Handle ping events specially
-                    if (eventType === 'ping') {
-                      console.log('Received ping event');
-                      continue;
-                    }
-                    
-                    try {
-                      const parsed = JSON.parse(eventData);
-                      
-                      // Process content block delta (the text chunks)
-                      if (parsed.type === 'content_block_delta' && 
-                          parsed.delta && 
-                          parsed.delta.type === 'text_delta') {
-                        const textChunk = parsed.delta.text;
-                        htmlOutput += textChunk;
-                        chunkCount++;
-                        
-                        // Send chunk in content_block_delta format to match server.py
-                        writeEvent('content', { 
-                          type: 'content_block_delta', 
-                          chunk_id: `${messageId}_${chunkCount}`,
-                          delta: {
-                            text: textChunk
-                          }
-                        });
-                        
-                        // More frequent keepalives during processing
-                        writeEvent('keepalive', { 
-                          timestamp: Date.now() / 1000,
-                          chunk_count: chunkCount
-                        });
-                        
-                        // Debug logging
-                        if (chunkCount % 10 === 0) {
-                          console.log(`Processed ${chunkCount} chunks, current length: ${htmlOutput.length}`);
-                        }
-                      } else if (parsed.type === 'thinking') {
-                        // Pass thinking update to client
-                        writeEvent('thinking_update', {
-                          thinking: parsed
-                        });
-                      } else if (parsed.type === 'message_start') {
-                        console.log('Message start received');
-                        writeEvent('keepalive', { timestamp: Date.now() / 1000 });
-                      } else if (parsed.type === 'message_delta') {
-                        if (parsed.delta && parsed.delta.stop_reason) {
-                          console.log(`Message completion: ${parsed.delta.stop_reason}`);
-                        }
-                      } else if (parsed.type === 'message_stop') {
-                        // Final message completion
-                        console.log('Message stop received');
-                        
-                        // Send message complete event
-                        writeEvent('message_complete', {
-                          message: 'Content generation complete'
-                        });
-                        
-                        // Mark as successful
-                        success = true;
-                      } else {
-                        console.log(`Other event type: ${parsed.type}`);
-                      }
-                    } catch (e) {
-                      console.error('Error parsing event data:', e);
-                      console.error('Event data:', eventData.substring(0, 200));
-                    }
-                  }
-                }
-                
-                // If we've completed successfully, break the retry loop
-                if (success) {
-                  console.log(`HTML generation complete, length: ${htmlOutput.length} characters`);
-                  break;
-                }
-              } catch (streamError) {
-                console.error('Error during stream processing:', streamError);
-                writeEvent('status', {
-                  message: `Stream error: ${streamError.message}`
-                });
-                throw streamError; // Rethrow to be caught by the retry logic
-              }
-              
-            } catch (requestError) {
-              console.error('Error during request/streaming:', requestError);
-              
-              // Include more detailed error info in the status
-              const errorMsg = requestError.message || 'Unknown error';
-              writeEvent('status', {
-                message: `API request error: ${errorMsg.substring(0, 100)}`
-              });
-              
-              // Check if we've already tried the maximum number of times
-              if (retryCount >= maxRetries) {
-                writeEvent('error', { 
-                  error: `Failed after ${maxRetries + 1} attempts: ${requestError.message}` 
-                });
-                
-                // Fall back to a simple HTML if all API attempts fail
-                console.log('All API attempts failed, falling back to basic HTML');
-                htmlOutput = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fallback Visualization</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #ef4444; }
-    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>API Connection Issue Detected</h1>
-  <p>The application couldn't connect to the Anthropic API, but has generated this fallback HTML.</p>
-  <p>Error details: ${requestError.message}</p>
-  <p>Generated at: ${new Date().toISOString()}</p>
-  <h2>Your Content Preview:</h2>
-  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
-</body>
-</html>`;
-                success = true;
-                break;
-              }
-              
-              // Increment retry count and apply exponential backoff
-              retryCount++;
-              const jitter = Math.random() * 500;
-              backoffTime = Math.min(10000, backoffTime * 2) + jitter;
-              
-              console.log(`Retrying after ${backoffTime}ms...`);
-              
-              // Let the client know we're retrying
-              writeEvent('status', { 
-                message: `Request attempt ${retryCount}/${maxRetries + 1} failed, retrying in ${Math.round(backoffTime/1000)}s...` 
-              });
-              
-              // Wait before the next retry
-              await sleep(backoffTime);
-            }
-          }
-          
-          // Process the HTML output before completing
-          if (htmlOutput) {
-            // Create a complete HTML document if it doesn't look like one already
-            let finalHtml = htmlOutput;
-            if (!finalHtml.trim().toLowerCase().startsWith('<!doctype html>') && 
-                !finalHtml.trim().toLowerCase().startsWith('<html')) {
-              finalHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Generated Visualization</title>
-</head>
-<body>
-  ${finalHtml}
-</body>
-</html>`;
-            }
-            
-            // Calculate approximate token usage for analytics
-            const contentLength = content.length;
-            const outputLength = finalHtml.length;
-            // Rough token estimates based on character count (about 4 chars per token)
-            const inputTokens = Math.ceil(contentLength / 4);
-            const outputTokens = Math.ceil(outputLength / 4);
-            const totalCost = (inputTokens / 1000000) * 3.0 + (outputTokens / 1000000) * 15.0;
-            
-            // Include token usage in the event
-            const usage = {
-              input_tokens: inputTokens,
-              output_tokens: outputTokens,
-              total_cost: totalCost
-            };
-            
-            // Send complete content event with the full HTML
-            writeEvent('content_complete', { 
-              content: finalHtml,
-              length: finalHtml.length,
-              chunks: chunkCount,
-              usage: usage
-            });
-            
-            // Send message_complete event with usage statistics
-            writeEvent('message_complete', {
-              message: 'Content generation complete',
-              usage: usage
-            });
-            
-            console.log(`Content complete sent, length: ${finalHtml.length}`);
-          } else {
-            // Even if we don't have HTML output, generate a simple fallback
-            const fallbackHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Generated Visualization</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #3b82f6; }
-    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>Simple Content Visualization</h1>
-  <p>Generated at ${new Date().toISOString()}</p>
-  <h2>Your Content Preview:</h2>
-  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
-</body>
-</html>`;
-            
-            // Calculate approximate token usage for analytics
-            const fallbackContentLength = content.length;
-            const fallbackOutputLength = fallbackHtml.length;
-            // Rough token estimates based on character count (about 4 chars per token)
-            const fallbackInputTokens = Math.ceil(fallbackContentLength / 4);
-            const fallbackOutputTokens = Math.ceil(fallbackOutputLength / 4);
-            const fallbackTotalCost = (fallbackInputTokens / 1000000) * 3.0 + (fallbackOutputTokens / 1000000) * 15.0;
-            
-            // Include token usage in the event
-            const fallbackUsage = {
-              input_tokens: fallbackInputTokens,
-              output_tokens: fallbackOutputTokens,
-              total_cost: fallbackTotalCost
-            };
-            
-            writeEvent('content_complete', { 
-              content: fallbackHtml,
-              length: fallbackHtml.length,
-              chunks: 0,
-              usage: fallbackUsage
-            });
-            
-            console.log(`Fallback content sent, length: ${fallbackHtml.length}`);
-          }
-          
-          // Complete the stream after sending all the data
-          const elapsed = (Date.now() - startTime) / 1000;
-          writeEvent('complete', { 
-            message: 'Stream processing complete',
-            elapsed: elapsed,
-            html_length: htmlOutput.length || 0,
-            success: true
-          });
-          
-          console.log(`Generation complete. Elapsed time: ${elapsed}s`);
-          
-        } catch (error) {
-          console.error('Error in stream processing:', error);
-          
-          writeEvent('error', { 
-            error: `Stream processing error: ${error.message}` 
-          });
-          
-          // Even if there's an error, send a minimal HTML to the client
-          const errorHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Error Visualization</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #ef4444; }
-    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>Error Processing Request</h1>
-  <p>There was an error processing your request: ${error.message}</p>
-  <p>Generated at: ${new Date().toISOString()}</p>
-  <h2>Your Content Preview:</h2>
-  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
-</body>
-</html>`;
-          
-          // Calculate approximate token usage for analytics
-          const errorContentLength = content.length;
-          const errorOutputLength = errorHtml.length;
-          // Rough token estimates based on character count (about 4 chars per token)
-          const errorInputTokens = Math.ceil(errorContentLength / 4);
-          const errorOutputTokens = Math.ceil(errorOutputLength / 4);
-          const errorTotalCost = (errorInputTokens / 1000000) * 3.0 + (errorOutputTokens / 1000000) * 15.0;
-          
-          // Include token usage in the event
-          const errorUsage = {
-            input_tokens: errorInputTokens,
-            output_tokens: errorOutputTokens,
-            total_cost: errorTotalCost
-          };
-          
-          writeEvent('content_complete', { 
-            content: errorHtml,
-            length: errorHtml.length,
-            chunks: 0,
-            usage: errorUsage
-          });
-        } finally {
-          // Ensure timer is cleaned up
-          if (keepaliveInterval) {
-            clearInterval(keepaliveInterval);
-          }
-          
-          // Always send a final event indicating the stream is done
-          writeEvent('stream_end', { 
-            message: 'Stream finished', 
-            timestamp: Date.now() / 1000,
-            success: success || false
-          });
-          
-          // Safely close the controller
-          safeEndStream();
-        }
-      } catch (e) {
-        console.error('Fatal error in handler:', e);
-        
-        // Try to send a final error event
-        try {
-          writeEvent('error', { error: `Fatal error: ${e.message}` });
-          
-          // Send a minimal HTML even in case of fatal error
-          const fatalErrorHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Error</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #ef4444; }
-  </style>
-</head>
-<body>
-  <h1>Fatal Error</h1>
-  <p>A fatal error occurred: ${e.message}</p>
-  <p>Generated at: ${new Date().toISOString()}</p>
-</body>
-</html>`;
-          
-          // Calculate approximate token usage for analytics
-          const fatalContentLength = content ? content.length : 0;
-          const fatalOutputLength = fatalErrorHtml.length;
-          // Rough token estimates based on character count (about 4 chars per token)
-          const fatalInputTokens = Math.ceil(fatalContentLength / 4);
-          const fatalOutputTokens = Math.ceil(fatalOutputLength / 4);
-          const fatalTotalCost = (fatalInputTokens / 1000000) * 3.0 + (fatalOutputTokens / 1000000) * 15.0;
-          
-          // Include token usage in the event
-          const fatalUsage = {
-            input_tokens: fatalInputTokens,
-            output_tokens: fatalOutputTokens,
-            total_cost: fatalTotalCost
-          };
-          
-          writeEvent('content_complete', { 
-            content: fatalErrorHtml,
-            length: fatalErrorHtml.length,
-            chunks: 0,
-            usage: fatalUsage
-          });
-        } catch (_) {
-          console.error('Failed to send error event');
-        }
-        
-        // Ensure the stream is closed properly
-        safeEndStream();
-      }
+      // End the response stream
+      res.end();
+    }, 500); // 500ms delay
+  } catch (error) {
+    console.error('Error in sendContentComplete:', error);
+    
+    // Try to send error and end response
+    try {
+      res.write(`data: ${JSON.stringify({
+        type: 'error',
+        error: error.message,
+        content: html // Still send the HTML as fallback
+      })}\n\n`);
+      res.end();
+    } catch (e) {
+      console.error('Failed to send error:', e);
     }
-  });
+  }
+};
+
+// Process the file/text content and generate HTML using Claude
+export default async function handler(req, res) {
+  // Record start time for performance tracking
+  startTime = Date.now();
   
-  // Return the stream as the response
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
+  // Setup CORS headers for Vercel
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Handle preflight request
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  // Only allow POST method
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Method not allowed, please use POST' });
+    return;
+  }
+  
+  // Setup response for server-sent events
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  
+  // Start keepalive mechanism
+  let keepaliveInterval;
+  
+  try {
+    // Send initial keepalive
+    res.write(`data: ${JSON.stringify({ type: 'keepalive' })}\n\n`);
+    
+    // Setup interval for keepalive messages
+    keepaliveInterval = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'keepalive' })}\n\n`);
+      } else {
+        clearInterval(keepaliveInterval);
+      }
+    }, 500);
+    
+    // Parse request body
+    const body = req.body;
+    
+    // Log the request body structure for debugging
+    console.log('Request body structure:', JSON.stringify(Object.keys(body)));
+    
+    // Validate required fields
+    if (!body || !body.api_key) {
+      throw new Error('Missing required fields: api_key');
     }
-  });
+    
+    // Check if this is test mode
+    const testMode = body.test_mode === true;
+    
+    // Get the API key
+    const apiKey = body.api_key;
+    
+    // Prepare user content
+    let content = body.content || '';
+    
+    // Handle parameters
+    const temperature = parseFloat(body.temperature || '1.0');
+    const maxTokens = parseInt(body.max_tokens || '128000', 10);
+    const thinkingBudget = parseInt(body.thinking_budget || '32000', 10);
+    const formatPrompt = body.format_prompt || '';
+    
+    console.log(`Processing content with maxTokens=${maxTokens}, temperature=${temperature}, thinking_budget=${thinkingBudget}`);
+    
+    // Create a shorter sample of the content for logging
+    const contentPreview = content.substring(0, Math.min(content.length, 100)) + '...';
+    console.log(`Content sample: ${contentPreview}`);
+    
+    // If test mode enabled, just return a simple page immediately
+    if (testMode) {
+      console.log('Test mode enabled, generating simple test HTML');
+      
+      // Create a simple HTML page
+      const testHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Visualization</title>
+    <style>
+      body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+      pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+      .sample { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Test Mode Visualization</h1>
+    <p>This is a simplified test page generated without calling the Claude API.</p>
+    
+    <h2>Your Content Sample:</h2>
+    <div class="sample">
+      <pre>${escapeHtml(content.substring(0, 500))}${content.length > 500 ? '...\n(content truncated)' : ''}</pre>
+    </div>
+    
+    <h2>Settings:</h2>
+    <ul>
+      <li>Temperature: ${temperature}</li>
+      <li>Max Tokens: ${maxTokens}</li>
+      <li>Thinking Budget: ${thinkingBudget}</li>
+      ${formatPrompt ? `<li>Additional Instructions: ${escapeHtml(formatPrompt)}</li>` : ''}
+    </ul>
+    
+    <p>Use the regular mode to generate a full visualization with Claude.</p>
+</body>
+</html>`;
+      
+      // Create sample usage info for the client
+      const testUsage = {
+        input_tokens: Math.ceil(content.length / 4),
+        output_tokens: 350,
+        thinking_tokens: 0,
+        total_cost: ((Math.ceil(content.length / 4) / 1000000) * 3) + ((350 / 1000000) * 15),
+        time_elapsed: 0.5
+      };
+      
+      // Send HTML and usage information
+      await sendContentComplete(res, testHtml, testUsage, Date.now());
+      return;
+    }
+    
+    // Prepare the system prompt
+    const systemPrompt = `You are an expert web developer specializing in creating beautiful, functional HTML documents from content.
+
+Your task is to create a visually appealing webpage based on the content provided. The HTML page should:
+
+1. Present the core information in the most visually appealing way possible
+2. Be a complete, self-contained HTML file with embedded CSS and any necessary JavaScript
+3. Follow these requirements:
+
+DESIGN STYLE:
+- Use modern, clean design principles with appropriate typography
+- Create a visually appealing layout that enhances readability and user experience
+- Include appropriate visual hierarchy, spacing, and design elements
+- Choose a color scheme that fits the content's purpose and tone
+- Use elegant animations and transitions where appropriate
+
+TECHNICAL SPECIFICATIONS:
+- Create semantic HTML5 that is valid and well-structured
+- Embed all CSS within a <style> tag in the document head
+- Only use vanilla JavaScript (no external libraries or frameworks)
+- Include all necessary meta tags for proper display and SEO
+- Make the page highly accessible following WCAG guidelines
+
+RESPONSIVE DESIGN:
+- Ensure the page works perfectly across all device sizes
+- Use responsive design principles with appropriate breakpoints
+- Implement a mobile-first approach where appropriate
+- Test layouts for desktop, tablet, and mobile views
+
+USER INTERACTION:
+- Add appropriate interactive elements to enhance content engagement
+- Include a table of contents for longer documents with smooth scrolling
+- Implement dark/light mode toggle if appropriate for the content
+- Create navigation UI for structured content
+
+PERFORMANCE OPTIMIZATION:
+- Optimize all code for fast loading and performance
+- Minify CSS if including substantial styling
+- Ensure JavaScript is efficient and non-blocking
+- Consider lazy-loading for any heavy content sections
+
+OUTPUT REQUIREMENTS:
+- Deliver a complete HTML document that renders beautifully in modern browsers
+- Include <!DOCTYPE html> and all required HTML structure
+- Embed all CSS and JavaScript directly in the document
+- Do NOT include lengthy comments explaining your code choices
+- Do NOT use external resources like CDNs, images, or libraries
+
+Remember, your goal is to transform the content into the most beautiful, functional webpage possible while keeping everything self-contained in a single HTML file.`;
+
+    // Get a smaller sample of content for the prompt
+    const contentSample = content.substring(0, Math.min(content.length, 20000));
+    
+    // Determine the model to use based on test mode
+    const model = testMode ? 'claude-3-haiku-20240307' : 'claude-3-7-sonnet-20250219';
+    
+    // Prepare the API request to Anthropic
+    console.log(`Making request to Anthropic API with model: ${model}`);
+    
+    const apiRequestBody = {
+      model: model,
+      max_tokens: maxTokens,
+      temperature: temperature,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: `Please create a beautiful HTML page for the following content:
+${formatPrompt ? "\nAdditional instructions: " + formatPrompt + "\n" : ""}
+${content}`
+        }
+      ]
+    };
+    
+    // Log the API request for debugging
+    console.log('API Request:', JSON.stringify(apiRequestBody, null, 2));
+    
+    // Make the API request to Anthropic
+    const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(apiRequestBody)
+    });
+    
+    // Check if the API response is successful
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text();
+      console.error(`API error: ${apiResponse.status}`, errorText);
+      
+      // Generate a fallback HTML with the error
+      const fallbackHtml = generateFallbackHtml(content, formatPrompt, `API Error: ${apiResponse.status}`, errorText);
+      
+      // Create minimal usage stats for the fallback
+      const fallbackUsage = {
+        input_tokens: Math.ceil(content.length / 4),
+        output_tokens: 500,
+        thinking_tokens: 0,
+        total_cost: ((Math.ceil(content.length / 4) / 1000000) * 3) + ((500 / 1000000) * 15)
+      };
+      
+      // Send the fallback HTML with error
+      await sendContentComplete(res, fallbackHtml, fallbackUsage, Date.now());
+      return;
+    }
+    
+    // Process the successful API response
+    const responseData = await apiResponse.json();
+    
+    // Extract the HTML content
+    let generatedHtml = '';
+    let htmlStarted = false;
+    
+    // Extract the text content from the response
+    const responseText = responseData.content[0].text;
+    
+    // Look for content within HTML tags or code blocks
+    const htmlBlockRegex = /```(?:html)?\s*([^`]+)```/g;
+    const htmlMatches = Array.from(responseText.matchAll(htmlBlockRegex));
+    
+    if (htmlMatches && htmlMatches.length > 0) {
+      // Use the first HTML code block found
+      generatedHtml = htmlMatches[0][1].trim();
+    } else {
+      // Try to extract content between <html> and </html>
+      const htmlTagRegex = /<html[^>]*>([\s\S]*)<\/html>/i;
+      const htmlTagMatch = responseText.match(htmlTagRegex);
+      
+      if (htmlTagMatch && htmlTagMatch.length > 1) {
+        generatedHtml = `<html${htmlTagMatch[0].substring(5, htmlTagMatch.index + 1)}${htmlTagMatch[1]}</html>`;
+      } else {
+        // If no HTML tags found, check if the response looks like HTML 
+        if (responseText.trim().startsWith('<!DOCTYPE html>') || responseText.trim().startsWith('<html')) {
+          generatedHtml = responseText.trim();
+        } else {
+          // Wrap plain text in basic HTML if no HTML content is found
+          generatedHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated Content</title>
+    <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+        pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Generated Content</h1>
+    <pre>${escapeHtml(responseText)}</pre>
+</body>
+</html>`;
+        }
+      }
+    }
+    
+    // Make sure the HTML includes doctype if not present
+    if (!generatedHtml.includes('<!DOCTYPE')) {
+      generatedHtml = `<!DOCTYPE html>\n${generatedHtml}`;
+    }
+    
+    // Calculate token usage
+    const inputTokens = Math.ceil(content.length / 4); // Rough estimation
+    const outputTokens = responseData.usage?.output_tokens || Math.ceil(generatedHtml.length / 4);
+    
+    // No thinking tokens in the usage stats
+    const usageStats = {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_cost: ((inputTokens / 1000000) * 3) + ((outputTokens / 1000000) * 15)
+    };
+    
+    // Send the completed HTML with usage stats
+    await sendContentComplete(res, generatedHtml, usageStats, Date.now());
+    
+  } catch (error) {
+    console.error('Error:', error);
+    
+    // Generate a fallback HTML with the error
+    const fallbackHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error</title>
+    <style>
+        body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; color: #333; }
+        .error { background: #fff0f0; border-left: 4px solid #ff5252; padding: 15px; margin: 20px 0; }
+        .content-preview { background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; max-height: 300px; overflow-y: auto; }
+        h1 { color: #ff5252; }
+    </style>
+</head>
+<body>
+    <h1>Error Generating Visualization</h1>
+    <div class="error">
+        <p><strong>Error message:</strong> ${escapeHtml(error.message || 'Unknown error occurred')}</p>
+    </div>
+    <h2>Content Preview</h2>
+    <div class="content-preview">
+        <pre>${escapeHtml(req.body?.content?.substring(0, 500) || 'No content provided')}${req.body?.content?.length > 500 ? '...\n(content truncated)' : ''}</pre>
+    </div>
+    <p>Please try again with different content or settings.</p>
+</body>
+</html>`;
+    
+    // Simple usage stats for error case
+    const errorUsage = {
+      input_tokens: Math.ceil((req.body?.content?.length || 0) / 4),
+      output_tokens: 350,
+      total_cost: 0
+    };
+    
+    try {
+      // Attempt to send error and fallback HTML
+      await sendContentComplete(res, fallbackHtml, errorUsage, Date.now());
+    } catch (e) {
+      console.error('Error sending fallback HTML:', e);
+      
+      // Last resort - try to end the response
+      try {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      } catch (finalError) {
+        console.error('Failed to end response:', finalError);
+      }
+    }
+  } finally {
+    // Clean up the keepalive interval
+    if (keepaliveInterval) {
+      clearInterval(keepaliveInterval);
+    }
+  }
 }
 
 // Helper to escape HTML
