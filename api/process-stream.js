@@ -120,8 +120,8 @@ export default async function handler(req) {
           }
         }, 500);
         
-        // System prompt - simplified for Vercel environment to reduce potential issues
-        const systemPrompt = "Create a beautiful HTML visualization of the provided content. Make it clean, modern, and responsive with appropriate styling.";
+        // System prompt - use the full prompt for best results
+        const systemPrompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).";
         
         // Format user content - use smaller chunk for Vercel and simplify
         let userContent;
@@ -130,7 +130,7 @@ export default async function handler(req) {
           userContent = `This is a test mode request. Generate a simple HTML page saying "Test successful".`;
         } else {
           // For regular mode, use a smaller portion of content for Vercel
-          const contentSample = content.substring(0, Math.min(content.length, 10000));
+          const contentSample = content.substring(0, Math.min(content.length, 20000));
           userContent = formatPrompt ? 
             `${formatPrompt}\n\nGenerate HTML for this content: ${contentSample}` :
             `Generate HTML for this content: ${contentSample}`;
@@ -149,9 +149,9 @@ export default async function handler(req) {
           let htmlOutput = '';
           let chunkCount = 0;
           
-          // Choose a lighter model for Vercel to reduce timeouts
-          const model = testMode ? 'claude-3-haiku-20240307' : 'claude-3-haiku-20240307';
-          const tokenLimit = testMode ? 1000 : 10000;
+          // Use the correct Claude 3.7 model as requested
+          const model = testMode ? 'claude-3-haiku-20240307' : 'claude-3-7-sonnet-20250219';
+          const tokenLimit = testMode ? 1000 : 60000;
           
           writeEvent('status', {
             message: `Using model: ${model} with max tokens: ${tokenLimit}`
@@ -166,8 +166,8 @@ export default async function handler(req) {
               const signal = abortController.signal;
               
               // For debugging - generate a simple HTML directly instead of calling the API
-              if (testMode || process.env.VERCEL_DEBUG === 'true') {
-                console.log('Using debug mode/test mode - generating simple HTML');
+              if (testMode) {
+                console.log('Using test mode - generating simple HTML');
                 
                 // Create a simple HTML file
                 htmlOutput = `<!DOCTYPE html>
@@ -215,7 +215,20 @@ export default async function handler(req) {
                 message: `Connecting to Anthropic API...`
               });
               
-              // Call Anthropic API with a simpler structure to avoid issues
+              // Log the exact request we're about to make (debugging)
+              const requestBody = {
+                model: model,
+                max_tokens: tokenLimit,
+                temperature: temperature,
+                system: systemPrompt,
+                messages: [{ role: 'user', content: userContent }],
+                stream: true
+              };
+              
+              // Don't log the entire content, just length
+              console.log(`API request: model=${model}, max_tokens=${tokenLimit}, content_length=${userContent.length}`);
+              
+              // Call Anthropic API with correct headers for Claude 3.7
               const response = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
                 headers: {
@@ -223,14 +236,7 @@ export default async function handler(req) {
                   'x-api-key': apiKey,
                   'anthropic-version': '2023-06-01'
                 },
-                body: JSON.stringify({
-                  model: model,
-                  max_tokens: tokenLimit,
-                  temperature: temperature,
-                  system: systemPrompt,
-                  messages: [{ role: 'user', content: userContent }],
-                  stream: true
-                }),
+                body: JSON.stringify(requestBody),
                 signal
               }).catch(error => {
                 console.error('Fetch API error:', error);
@@ -415,6 +421,7 @@ export default async function handler(req) {
   <style>
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
     h1 { color: #ef4444; }
+    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
   </style>
 </head>
 <body>
@@ -422,6 +429,8 @@ export default async function handler(req) {
   <p>The application couldn't connect to the Anthropic API, but has generated this fallback HTML.</p>
   <p>Error details: ${requestError.message}</p>
   <p>Generated at: ${new Date().toISOString()}</p>
+  <h2>Your Content Preview:</h2>
+  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
 </body>
 </html>`;
                 success = true;
@@ -480,10 +489,17 @@ export default async function handler(req) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Generated Visualization</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
+    h1 { color: #3b82f6; }
+    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
+  </style>
 </head>
 <body>
-  <h1>Minimal Visualization</h1>
+  <h1>Simple Content Visualization</h1>
   <p>Generated at ${new Date().toISOString()}</p>
+  <h2>Your Content Preview:</h2>
+  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
 </body>
 </html>`;
             
@@ -524,12 +540,15 @@ export default async function handler(req) {
   <style>
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
     h1 { color: #ef4444; }
+    pre { background: #f5f5f5; padding: 1rem; border-radius: 0.5rem; overflow: auto; }
   </style>
 </head>
 <body>
   <h1>Error Processing Request</h1>
   <p>There was an error processing your request: ${error.message}</p>
   <p>Generated at: ${new Date().toISOString()}</p>
+  <h2>Your Content Preview:</h2>
+  <pre>${content.substring(0, 500)}${content.length > 500 ? '...' : ''}</pre>
 </body>
 </html>`;
           
