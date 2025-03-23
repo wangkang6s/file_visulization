@@ -482,7 +482,7 @@ function switchTab(tab) {
     state.activeTab = tab;
     
     // Check for required tab elements using the correct element references
-    if (!elements.fileTab || !elements.textTab || !elements.fileInput || !elements.inputText) {
+    if (!elements.fileTab || !elements.textTab || !elements.fileInput || !elements.textInput) {
         console.error('Tab elements not found');
         return;
     }
@@ -495,7 +495,7 @@ function switchTab(tab) {
         elements.textTab.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-700', 'dark:text-gray-300');
         
         elements.fileInput.classList.remove('hidden');
-        elements.inputText.classList.add('hidden');
+        elements.textInput.classList.add('hidden');
         
         // Clear text input content when switching to file tab
         if (elements.inputText) {
@@ -509,7 +509,7 @@ function switchTab(tab) {
         elements.fileTab.classList.remove('bg-primary-100', 'dark:bg-primary-900', 'text-primary-700', 'dark:text-primary-300');
         elements.fileTab.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-700', 'dark:text-gray-300');
         
-        elements.inputText.classList.remove('hidden');
+        elements.textInput.classList.remove('hidden');
         elements.fileInput.classList.add('hidden');
         
         // Clear file data when switching to text tab
@@ -546,6 +546,13 @@ function setupDragAndDrop() {
         console.error('Drop area element not found');
         return;
     }
+    
+    // Add click event to dropArea to trigger file upload dialog
+    dropArea.addEventListener('click', function() {
+        if (elements.fileUpload) {
+            elements.fileUpload.click();
+        }
+    });
     
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         dropArea.addEventListener(eventName, preventDefaults, false);
