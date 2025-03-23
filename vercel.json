@@ -13,7 +13,8 @@
       "src": "api/**",
       "use": "@vercel/node",
       "config": {
-        "maxDuration": 60
+        "maxDuration": 60,
+        "runtime": "edge"
       }
     }
   ],
