@@ -27,6 +27,7 @@ import sys
 import logging
 from datetime import datetime
 
+# Initialize Flask app
 app = Flask(__name__, static_folder='static')
 CORS(app)  # Enable CORS for all routes
 
@@ -68,7 +69,7 @@ MAX_BACKOFF_DELAY = 45  # Max 45 seconds delay (reduced from 60)
 BACKOFF_FACTOR = 1.3  # Use 1.3 instead of 1.5 for more gradual increase
 
 @app.route('/')
-def index():
+def serve_index():
     return send_from_directory('static', 'index.html')
 
 @app.route('/<path:path>')
