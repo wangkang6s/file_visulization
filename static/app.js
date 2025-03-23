@@ -70,7 +70,6 @@ const elements = {
     resultSection: $('#result-section'),
     inputTokens: $('#input-tokens'),
     outputTokens: $('#output-tokens'),
-    thinkingTokens: $('#thinking-tokens'),
     totalCost: $('#total-cost'),
     
     // Output
@@ -121,10 +120,17 @@ function init() {
     document.documentElement.classList.remove('dark');
     localStorage.setItem('theme', 'light');
     
+    // Reset usage statistics to clear any previously stored values
+    resetUsageStatistics();
+    
+    // Reset token stats display
+    resetTokenStats();
+    
     // Load saved API key if available
     const savedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
     if (savedApiKey && elements.apiKeyInput) {
         elements.apiKeyInput.value = savedApiKey;
+        state.apiKey = savedApiKey; // Make sure we update the state
         validateApiKey(); // Automatically validate the saved key
     }
     
@@ -140,26 +146,99 @@ function init() {
     // Load and display usage statistics
     loadUsageStatistics();
     
+    // Ensure the generate button state is correct
+    setTimeout(updateGenerateButtonState, 200);
+    
+    // Force enable the generate button for testing
+    setTimeout(() => {
+        console.log('Forcefully ensuring generate button is enabled');
+        const generateBtn = document.getElementById('generate-btn');
+        if (generateBtn) {
+            // Force visual style regardless of conditions
+            generateBtn.disabled = false;
+            generateBtn.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+            generateBtn.classList.add('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
+            generateBtn.style.pointerEvents = 'auto';
+            
+            // Make sure event handler is attached
+            if (!generateBtn._hasDirectHandler) {
+                generateBtn.onclick = function(e) {
+                    console.log('Generate button clicked via direct handler!');
+                    e.preventDefault();
+                    
+                    if (typeof generateWebsite === 'function') {
+                        generateWebsite();
+                    } else {
+                        console.error('generateWebsite function not found!');
+                        alert('Error: Generation function not found. Please check the console.');
+                    }
+                    return false;
+                };
+                generateBtn._hasDirectHandler = true;
+            }
+        } else {
+            console.error('Generate button not found in setTimeout!');
+        }
+    }, 500);
+    
+    // Force enable all buttons as a fallback
+    setTimeout(() => {
+        document.querySelectorAll('button').forEach(button => {
+            button.style.pointerEvents = 'auto';
+            button.disabled = false;
+        });
+        console.log("All buttons forcefully enabled as fallback");
+    }, 1000);
+    
     console.log("App initialized");
 }
 
+// Helper function to format the cost display - showing dash when 0 or undefined
+function formatCostDisplay(cost) {
+    if (!cost || cost <= 0) {
+        return '-';
+    }
+    return `$${cost.toFixed(4)}`;
+}
+
+// Update all cost display logic to use this helper
 function loadUsageStatistics() {
     try {
-        // Get stored statistics or initialize with zeros
+        // Get stats from localStorage
         const stats = JSON.parse(localStorage.getItem('fileVisualizerStats') || '{"totalRuns":0,"totalTokens":0,"totalCost":0}');
         
-        // Update UI elements if they exist
+        // Update the stats display
         if (document.getElementById('total-runs')) {
             document.getElementById('total-runs').textContent = stats.totalRuns.toLocaleString();
         }
+        
         if (document.getElementById('total-tokens')) {
             document.getElementById('total-tokens').textContent = stats.totalTokens.toLocaleString();
         }
+        
         if (document.getElementById('total-cost')) {
-            document.getElementById('total-cost').textContent = `$${stats.totalCost.toFixed(4)}`;
+            document.getElementById('total-cost').textContent = formatCostDisplay(stats.totalCost);
         }
+        
+        return stats;
     } catch (e) {
         console.error('Error loading usage statistics:', e);
+        return { totalRuns: 0, totalTokens: 0, totalCost: 0 };
+    }
+}
+
+// Add a function to reset statistics (can be called for testing)
+function resetUsageStatistics() {
+    try {
+        localStorage.setItem('fileVisualizerStats', JSON.stringify({
+            totalRuns: 0,
+            totalTokens: 0,
+            totalCost: 0
+        }));
+        loadUsageStatistics(); // Reload the stats display
+        console.log('Usage statistics have been reset');
+    } catch (e) {
+        console.error('Error resetting usage statistics:', e);
     }
 }
 
@@ -547,11 +626,11 @@ function handleFile(file) {
             try {
                 // Convert the array buffer to base64
                 const uint8Array = new Uint8Array(e.target.result);
-                const base64String = btoa(
-                    Array.from(uint8Array)
-                        .map(byte => String.fromCharCode(byte))
-                        .join('')
-                );
+                let binary = '';
+                for (let i = 0; i < uint8Array.length; i++) {
+                    binary += String.fromCharCode(uint8Array[i]);
+                }
+                const base64String = btoa(binary);
                 
                 // Store the base64 string
                 state.fileContent = base64String;
@@ -583,7 +662,7 @@ function handleFile(file) {
                                     <h3>Token Analysis</h3>
                                     <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
                                     <p>Estimated Input Cost: $${data.estimated_cost.toFixed(4)}</p>
-                                    <p>Maximum Safe Output Tokens: ${data.max_safe_output_tokens.toLocaleString()}</p>
+                                    <p>Maximum Safe Input Tokens: 200,000</p>
                                 </div>
                             `;
                         }
@@ -637,11 +716,11 @@ function handleFile(file) {
             try {
                 // Convert the array buffer to base64
                 const uint8Array = new Uint8Array(e.target.result);
-                const base64String = btoa(
-                    Array.from(uint8Array)
-                        .map(byte => String.fromCharCode(byte))
-                        .join('')
-                );
+                let binary = '';
+                for (let i = 0; i < uint8Array.length; i++) {
+                    binary += String.fromCharCode(uint8Array[i]);
+                }
+                const base64String = btoa(binary);
                 
                 // Store the base64 string
                 state.fileContent = base64String;
@@ -788,62 +867,116 @@ function resetThinkingBudget() {
 
 // Generate Button State
 function updateGenerateButtonState() {
+    console.log('updateGenerateButtonState called');
+    console.log('API Key:', state.apiKey ? 'Exists (length: ' + state.apiKey.length + ')' : 'Missing');
+    console.log('File content:', state.fileContent ? 'Exists (length: ' + state.fileContent.length + ')' : 'Missing');
+    console.log('Text content:', state.textContent ? 'Exists (length: ' + state.textContent.length + ')' : 'Missing');
+    console.log('Active tab:', state.activeTab);
+    
     // Make sure we have API key and content
     const hasApiKey = !!state.apiKey;
     const hasContent = (state.activeTab === 'file' && !!state.fileContent) || 
                        (state.activeTab === 'text' && !!state.textContent);
     
-    if (hasApiKey && hasContent) {
-        elements.generateBtn.disabled = false;
-        elements.generateBtn.classList.remove('bg-gray-300', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400', 'cursor-not-allowed');
-        elements.generateBtn.classList.add('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
-        if (elements.generateError) {
-            elements.generateError.classList.add('hidden');
+    console.log('Has API key:', hasApiKey, 'Has content:', hasContent);
+    
+    if (elements.generateBtn) {
+        if (hasApiKey && hasContent) {
+            console.log('Enabling generate button');
+            elements.generateBtn.disabled = false;
+            elements.generateBtn.classList.remove('bg-gray-300', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400', 'cursor-not-allowed');
+            elements.generateBtn.classList.add('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
+            elements.generateBtn.style.pointerEvents = 'auto';
+            if (elements.generateError) {
+                elements.generateError.classList.add('hidden');
+            }
+            
+            // Make sure the button has a click handler
+            if (!elements.generateBtn._hasClickHandler) {
+                console.log('Adding click handler to generate button');
+                elements.generateBtn.addEventListener('click', function(e) {
+                    console.log('Generate button clicked!');
+                    e.preventDefault();
+                    if (typeof generateWebsite === 'function') {
+                        generateWebsite();
+                    } else {
+                        console.error('generateWebsite function not found!');
+                    }
+                });
+                elements.generateBtn._hasClickHandler = true;
+            }
+        } else {
+            console.log('Disabling generate button');
+            elements.generateBtn.disabled = true;
+            elements.generateBtn.classList.add('bg-gray-300', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400', 'cursor-not-allowed');
         }
     } else {
-        elements.generateBtn.disabled = true;
-        elements.generateBtn.classList.add('bg-gray-300', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400', 'cursor-not-allowed');
-        elements.generateBtn.classList.remove('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
+        console.error('Generate button element not found!');
     }
 }
 
-// Generation Process
-async function startGeneration() {
+// Generate Website
+async function generateWebsite() {
+    if (state.processing) {
+        return;
+    }
+    
+    // Debug info for file uploads
+    if (state.activeTab === 'file' && state.file) {
+        console.log('Generating with file:', state.fileName);
+        console.log('File content stored (first 100 chars):', 
+                    state.fileContent ? state.fileContent.substring(0, 100) + '...' : 'No content stored');
+        console.log('File size:', state.file ? formatFileSize(state.file.size) : 'Unknown');
+    }
+    
     try {
-        // Get current values
-        const apiKey = elements.apiKeyInput.value.trim();
-        const content = getInputContent();
-        const formatPrompt = elements.additionalPrompt ? elements.additionalPrompt.value.trim() : '';
-        const temperature = parseFloat(elements.temperature.value);
-        const maxTokens = parseInt(elements.maxTokens.value);
-        const thinkingBudget = parseInt(elements.thinkingBudget.value);
+        state.processing = true;
         
-        // Validation
-        if (!apiKey) {
-            showToast('Please enter your Anthropic API key', 'error');
-            return;
+        // Clear any previous generation
+        state.generatedHtml = '';
+        updateHtmlDisplay();
+        updatePreview();
+        
+        // Show the processing animation
+        startProcessingAnimation();
+        
+        // Start timing the generation
+        startElapsedTimeCounter();
+        
+        // Get the source content (text or file content)
+        let content = '';
+        if (state.activeTab === 'text') {
+            content = elements.textInput ? elements.textInput.value.trim() : '';
+        } else if (state.activeTab === 'file' && state.fileContent) {
+            content = state.fileContent;
         }
         
         if (!content) {
-            showToast('Please provide content to transform', 'error');
-            return;
+            throw new Error('Please enter some text or upload a file first');
+        }
+        
+        // Get other parameters
+        const formatPrompt = elements.additionalPrompt ? elements.additionalPrompt.value.trim() : '';
+        const maxTokens = parseInt(elements.maxTokens ? elements.maxTokens.value : 128000, 10);
+        const temperature = parseFloat(elements.temperature ? elements.temperature.value : 1.0);
+        const apiKey = elements.apiKeyInput ? elements.apiKeyInput.value.trim() : state.apiKey;
+        const thinkingBudget = parseInt(elements.thinkingBudget ? elements.thinkingBudget.value : 32000, 10);
+        
+        if (!apiKey) {
+            throw new Error('Please enter your API key');
         }
         
         // Update UI for generation start
         disableInputsDuringGeneration(true);
         state.isGenerating = true;
         showResultSection();
-        state.generatedHtml = '';
         
         // Clear previous content and start animation
         updateHtmlDisplay();
         elements.previewIframe.srcdoc = '';
         
         // Reset output stats
-        elements.inputTokens.textContent = '0';
-        elements.outputTokens.textContent = '0';
-        elements.thinkingTokens.textContent = '0';
-        elements.totalCost.textContent = '$0.00';
+        resetTokenStats();
         
         // Start elapsed time counter
         startElapsedTimeCounter();
@@ -902,10 +1035,7 @@ async function startGeneration() {
                 
                 // Update usage statistics
                 if (result.usage) {
-                    elements.inputTokens.textContent = result.usage.input_tokens.toLocaleString();
-                    elements.outputTokens.textContent = result.usage.output_tokens.toLocaleString();
-                    elements.thinkingTokens.textContent = result.usage.thinking_tokens.toLocaleString();
-                    elements.totalCost.textContent = `$${result.usage.total_cost.toFixed(4)}`;
+                    updateTokenStats(result.usage);
                     
                     // Update storage with new usage stats
                     try {
@@ -929,7 +1059,7 @@ async function startGeneration() {
                             document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
                         }
                         if (document.getElementById('total-cost')) {
-                            document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                            document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
                         }
                     } catch (e) {
                         console.error('Error updating usage statistics:', e);
@@ -999,6 +1129,19 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 thinking_budget: thinkingBudget
             };
             
+            // Add file information for file uploads
+            if (state.activeTab === 'file' && state.file) {
+                console.log(`Adding file upload info: ${state.fileName} (${formatFileSize(state.file.size)})`);
+                requestBody.file_name = state.fileName;
+                requestBody.file_content = state.fileContent; // Use stored file content directly
+                
+                // Ensure file content is included in the source parameter too for compatibility
+                if (!requestBody.source || requestBody.source.trim() === '') {
+                    console.log('Setting source parameter to file content for compatibility');
+                    requestBody.source = state.fileContent;
+                }
+            }
+            
             // Add session information for reconnections
             if (sessionId) {
                 requestBody.session_id = sessionId;
@@ -1052,7 +1195,6 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 // Get a reader for the stream
                 const reader = response.body.getReader();
                 let decoder = new TextDecoder();
-                let lastChunkId = null;
                 
                 // Process the stream
                 while (true) {
@@ -1108,23 +1250,26 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                 // Check for the local message_complete
                                 if (data.type === 'end') {
                                     console.log('End message received from local server');
-                                    // This is handled at the end of the stream
+                                    // Store the generated HTML for later use
+                                    state.generatedHtml = generatedContent;
                                 }
                                 
                                 // Handle message complete from Vercel
                                 if (data.type === 'message_complete') {
                                     console.log('Message complete received');
                                     
+                                    // Ensure we store the generated HTML
+                                    state.generatedHtml = generatedContent;
+                                    
                                     // Update usage statistics
                                     if (data.usage) {
-                                        elements.inputTokens.textContent = data.usage.input_tokens.toLocaleString();
-                                        elements.outputTokens.textContent = data.usage.output_tokens.toLocaleString();
-                                        elements.thinkingTokens.textContent = data.usage.thinking_tokens.toLocaleString();
+                                        updateTokenStats(data.usage);
                                         
-                                        // Make sure total_cost is available or calculate it
+                                        // Calculate cost if available
                                         const totalCost = data.usage.total_cost || 
-                                            ((data.usage.input_tokens + data.usage.output_tokens) / 1000000 * 3.0);
-                                        elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                                            ((data.usage.input_tokens / 1000000) * 3.0 + 
+                                             (data.usage.output_tokens / 1000000) * 15.0);
+                                        elements.totalCost.textContent = formatCostDisplay(totalCost);
                                         
                                         // Update storage with new usage stats
                                         try {
@@ -1148,7 +1293,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                                 document.getElementById('total-tokens').textContent = existingStats.totalTokens.toLocaleString();
                                             }
                                             if (document.getElementById('total-cost')) {
-                                                document.getElementById('total-cost').textContent = `$${existingStats.totalCost.toFixed(4)}`;
+                                                document.getElementById('total-cost').textContent = formatCostDisplay(existingStats.totalCost);
                                             }
                                         } catch (e) {
                                             console.error('Error updating usage statistics:', e);
@@ -1159,6 +1304,7 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                 // Handle html field if present
                                 if (data.html) {
                                     generatedContent = data.html;
+                                    state.generatedHtml = data.html;
                                     updateHtmlPreview(generatedContent);
                                 }
                             } catch (e) {
@@ -1169,7 +1315,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                 }
                 
                 // If we got here, the stream completed successfully
+                // Make sure to update the state's generatedHtml property
                 state.generatedHtml = generatedContent;
+                
+                // Update the HTML display and preview with the final content
                 updateHtmlDisplay();
                 updatePreview();
                 
@@ -1424,16 +1573,7 @@ async function processWithStreaming(data) {
                         } else if (jsonData.type === 'message_complete') {
                             // Update UI
                             if (jsonData.usage) {
-                                elements.inputTokens.textContent = jsonData.usage.input_tokens.toLocaleString();
-                                elements.outputTokens.textContent = jsonData.usage.output_tokens.toLocaleString();
-                                if (jsonData.usage.thinking_tokens) {
-                                    elements.thinkingTokens.textContent = jsonData.usage.thinking_tokens.toLocaleString();
-                                }
-                                
-                                // Calculate cost if available
-                                const totalCost = jsonData.usage.total_cost || 
-                                    ((jsonData.usage.input_tokens + jsonData.usage.output_tokens) / 1000000 * 3.0);
-                                elements.totalCost.textContent = `$${totalCost.toFixed(4)}`;
+                                updateTokenStats(jsonData.usage);
                                 
                                 // Show time if available
                                 if (jsonData.usage.time_elapsed) {
@@ -1694,7 +1834,7 @@ async function analyzeTokens(content) {
                     <h3>Token Analysis</h3>
                     <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
                     <p>Estimated Input Cost: $${data.estimated_cost.toFixed(4)}</p>
-                    <p>Maximum Safe Output Tokens: ${data.max_safe_output_tokens.toLocaleString()}</p>
+                    <p>Maximum Safe Input Tokens: 200,000</p>
                 </div>
             `;
         }
@@ -1805,7 +1945,7 @@ function updateTokenInfoUI(data) {
                 <h3>Token Analysis</h3>
                 <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
                 <p>Estimated Input Cost: $${data.estimated_cost.toFixed(4)}</p>
-                <p>Maximum Safe Output Tokens: ${data.max_safe_output_tokens.toLocaleString()}</p>
+                <p>Maximum Safe Input Tokens: 200,000</p>
             </div>
         `;
     }
@@ -1963,5 +2103,56 @@ function hideTestModeIndicator() {
     }
 }
 
-// Initialize the app
-document.addEventListener('DOMContentLoaded', init); 
+// Modified function to more aggressively clear the local storage on page load
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        // Initialize the app
+        init();
+        
+        // Check URL parameters for reset flag
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('reset')) {
+            console.log('Reset flag detected in URL, clearing localStorage');
+            resetUsageStatistics();
+        }
+        
+        console.log('App loaded and ready!');
+    } catch (e) {
+        console.error('Error during initialization:', e);
+    }
+});
+
+// Ensure the app initializes
+if (document.readyState === 'loading') {
+    console.log('Document still loading, waiting for DOMContentLoaded event');
+} else {
+    console.log('Document already loaded, initializing immediately');
+    init();
+}
+
+// A wrapper function for compatibility in case someone calls startGeneration instead of generateWebsite
+function startGeneration() {
+    console.log('startGeneration called, forwarding to generateWebsite');
+    if (typeof generateWebsite === 'function') {
+        generateWebsite();
+    } else {
+        console.error('generateWebsite function not found in startGeneration!');
+    }
+}
+
+// Reset output stats
+function resetTokenStats() {
+    elements.inputTokens.textContent = '0';
+    elements.outputTokens.textContent = '0';
+    // The thinking tokens element might exist in the DOM but should not be used
+    elements.totalCost.textContent = '-';
+}
+
+// Update the UI with token usage data
+function updateTokenStats(usage) {
+    if (!usage) return;
+    
+    elements.inputTokens.textContent = usage.input_tokens.toLocaleString();
+    elements.outputTokens.textContent = usage.output_tokens.toLocaleString();
+    elements.totalCost.textContent = formatCostDisplay(usage.total_cost);
+} 

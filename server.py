@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import traceback
 # Updated import to be compatible with different versions of the Anthropic library
 try:
     from anthropic.types import TextBlock, MessageParam
@@ -23,7 +24,8 @@ import random
 import socket
 import argparse
 import sys
-import traceback
+import logging
+from datetime import datetime
 
 app = Flask(__name__, static_folder='static')
 CORS(app)  # Enable CORS for all routes
@@ -46,7 +48,7 @@ MAX_INPUT_TOKENS = 195000  # Setting a bit lower than the actual limit to accoun
 
 # Default settings
 DEFAULT_MAX_TOKENS = 128000
-DEFAULT_THINKING_BUDGET = 32000
+DEFAULT_THINKING_BUDGET = 32000  # Kept for compatibility but thinking tokens are included in output tokens
 STREAM_CHUNK_SIZE = 2  # Send keepalive every 2 chunks (reduced from 5)
 MAX_SEGMENT_SIZE = 16384  # 16KB per segment (reduced from 32KB)
 
@@ -104,6 +106,14 @@ def process():
 
     file_name = data['file_name']
     file_content = data['file_content']
+    
+    # Get additional parameters from request or use defaults
+    api_key = data.get('api_key', '')
+    format_prompt = data.get('format_prompt', '')
+    model = data.get('model', 'claude-3-7-sonnet-20250219')
+    max_tokens = int(data.get('max_tokens', DEFAULT_MAX_TOKENS))
+    temperature = float(data.get('temperature', 1.0))
+    thinking_budget = int(data.get('thinking_budget', DEFAULT_THINKING_BUDGET))
 
     try:
         # Convert base64 string back to bytes
@@ -112,30 +122,148 @@ def process():
         temp_file_path = f"/tmp/{file_name}"
         with open(temp_file_path, 'wb') as f:
             f.write(file_content_bytes)
-
-        # Process the file
-        processed_file_path = process_file(temp_file_path)
-
-        # Read the processed file content
-        with open(processed_file_path, 'rb') as f:
-            processed_file_content = f.read()
-        # Convert the processed file content to base64
-        base64_processed_file_content = base64.b64encode(processed_file_content).decode('utf-8')
-
-        # Create a response object
-        response = {
-            "file_name": file_name,
-            "file_content": base64_processed_file_content
-        }
-        return jsonify(response)
+            
+        # Determine file type and read content
+        file_ext = file_name.split('.')[-1].lower() if '.' in file_name else 'txt'
+        
+        # Process the file based on its type
+        file_text_content = ""
+        
+        if file_ext == 'pdf':
+            # Process PDF file
+            try:
+                reader = PyPDF2.PdfReader(temp_file_path)
+                for page_num in range(len(reader.pages)):
+                    file_text_content += reader.pages[page_num].extract_text() + "\n"
+            except Exception as e:
+                return jsonify({"error": f"Error processing PDF: {str(e)}"}), 500
+                
+        elif file_ext in ['docx', 'doc']:
+            # Process Word document
+            try:
+                doc = docx.Document(temp_file_path)
+                file_text_content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            except Exception as e:
+                return jsonify({"error": f"Error processing Word document: {str(e)}"}), 500
+                
+        else:
+            # Process text-based file
+            with open(temp_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                file_text_content = f.read()
+                
+        # Now process the file content with Claude
+        if not api_key:
+            return jsonify({"error": "API key is required"}), 400
+            
+        try:
+            # Use our helper function to create a compatible client
+            client = create_anthropic_client(api_key)
+            
+            # Prepare user message with content and additional prompt
+            user_content = file_text_content
+            if format_prompt:
+                user_content = f"{user_content}\n\n{format_prompt}"
+            
+            # Create parameters for the API call
+            params = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).",
+                "messages": [{"role": "user", "content": user_content}],
+            }
+            
+            # Add thinking parameter if thinking_budget > 0
+            if thinking_budget > 0:
+                params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+                
+            # Add beta parameter if needed for large outputs
+            if max_tokens > 4096:
+                params["betas"] = [OUTPUT_128K_BETA]
+            
+            # Create the message
+            response = client.messages.create(**params)
+            
+            # Extract the HTML from the response
+            html_content = ""
+            
+            # Handle different response formats
+            if hasattr(response, 'content') and response.content:
+                # Handle standard Anthropic client response
+                if isinstance(response.content, list) and len(response.content) > 0:
+                    if hasattr(response.content[0], 'text'):
+                        # Standard client format
+                        html_content = response.content[0].text
+                    elif isinstance(response.content[0], dict) and 'text' in response.content[0]:
+                        # Dictionary format
+                        html_content = response.content[0]['text']
+                elif isinstance(response.content, dict) and 'text' in response.content:
+                    # Simple dictionary format
+                    html_content = response.content['text']
+                elif isinstance(response.content, str):
+                    # Direct string format
+                    html_content = response.content
+            
+            # If still empty, try alternate paths
+            if not html_content and hasattr(response, 'completion'):
+                html_content = response.completion
+                
+            # As a last resort, convert the entire response to string
+            if not html_content:
+                print("Warning: Unable to extract HTML content using standard methods. Using fallback extraction.")
+                try:
+                    # Try to extract from the raw response
+                    if isinstance(response, dict) and 'content' in response:
+                        if isinstance(response['content'], list) and len(response['content']) > 0:
+                            first_item = response['content'][0]
+                            if isinstance(first_item, dict) and 'text' in first_item:
+                                html_content = first_item['text']
+                    
+                    # If still empty, convert the whole response to string
+                    if not html_content:
+                        html_content = str(response)
+                except Exception as e:
+                    print(f"Fallback extraction failed: {str(e)}")
+                    html_content = "Error: Unable to extract HTML content from response."
+                
+            # Get usage stats
+            input_tokens = 0
+            output_tokens = 0
+            
+            if hasattr(response, 'usage'):
+                if hasattr(response.usage, 'input_tokens'):
+                    input_tokens = response.usage.input_tokens
+                if hasattr(response.usage, 'output_tokens'):
+                    output_tokens = response.usage.output_tokens
+            elif isinstance(response, dict) and 'usage' in response:
+                usage = response['usage']
+                if isinstance(usage, dict):
+                    input_tokens = usage.get('input_tokens', 0)
+                    output_tokens = usage.get('output_tokens', 0)
+            
+            # Calculate total cost based on token usage
+            # Based on Anthropic documentation: Claude 3.7 Sonnet costs $3/MTok for input and $15/MTok for output
+            # Thinking tokens are already included in output tokens
+            total_cost = (input_tokens / 1000000) * 3.0 + (output_tokens / 1000000) * 15.0
+                
+            # Return the response
+            return jsonify({
+                'html': html_content,
+                'model': model,
+                'usage': {
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'total_cost': total_cost
+                }
+            })
+            
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error processing file content with Claude: {error_message}")
+            return jsonify({'error': f'Claude API error: {error_message}'}), 500
+            
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-def process_file(file_path):
-    # Placeholder for file processing logic
-    # This function should be implemented to process the file based on its type
-    # and return the processed file path
-    return file_path  # Placeholder return, actual implementation needed
 
 @app.route('/api/validate-key', methods=['POST'])
 def validate_key():
@@ -230,7 +358,7 @@ def process_file():
             "model": model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).",
+            "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.Your output is only one HTML file, do not present any other notes on the HTML.",
             "messages": [{"role": "user", "content": user_content}],
         }
         
@@ -290,21 +418,17 @@ def process_file():
         # Get usage stats
         input_tokens = 0
         output_tokens = 0
-        thinking_tokens = 0
         
         if hasattr(response, 'usage'):
             if hasattr(response.usage, 'input_tokens'):
                 input_tokens = response.usage.input_tokens
             if hasattr(response.usage, 'output_tokens'):
                 output_tokens = response.usage.output_tokens
-            if hasattr(response.usage, 'thinking_tokens'):
-                thinking_tokens = response.usage.thinking_tokens
         elif isinstance(response, dict) and 'usage' in response:
             usage = response['usage']
             if isinstance(usage, dict):
                 input_tokens = usage.get('input_tokens', 0)
                 output_tokens = usage.get('output_tokens', 0)
-                thinking_tokens = usage.get('thinking_tokens', 0)
                 
         # Log response structure for debugging
         print(f"Response type: {type(response)}")
@@ -318,7 +442,7 @@ def process_file():
             'usage': {
                 'input_tokens': input_tokens,
                 'output_tokens': output_tokens,
-                'thinking_tokens': thinking_tokens
+                'total_cost': (input_tokens / 1000000) * 3.0 + (output_tokens / 1000000) * 15.0
             }
         })
     
@@ -394,7 +518,7 @@ def analyze_tokens():
             return jsonify({"error": "No content to analyze"}), 400
         
         # Define the system prompt to include in token estimation - Use the same detailed prompt as in process_file
-        system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
+        system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).Your output is only one HTML file, do not present any other notes on the HTML."
         
         # Estimated system prompt tokens (if exact count not available)
         system_prompt_tokens = len(system_prompt) // 3
@@ -408,10 +532,18 @@ def analyze_tokens():
         # Calculate estimated cost (as of current pricing)
         estimated_cost = (estimated_tokens / 1000000) * 3.0  # $3 per million tokens
         
+        # Add thinking budget in cost estimate
+        thinking_budget = int(data.get('thinking_budget', DEFAULT_THINKING_BUDGET))
+        if thinking_budget > 0:
+            estimated_cost += (thinking_budget / 1000000) * 3.0  # Add thinking cost
+        
+        # Calculate max safe input tokens
+        max_safe_input_tokens = 200000  # Claude 3.7 context window
+        
         return jsonify({
             'estimated_tokens': estimated_tokens,
             'estimated_cost': round(estimated_cost, 6),
-            'max_safe_output_tokens': min(128000, TOTAL_CONTEXT_WINDOW - estimated_tokens - 5000)
+            'max_safe_input_tokens': max_safe_input_tokens
         })
     except Exception as e:
         return jsonify({"error": f"Error analyzing tokens: {str(e)}"}), 500
@@ -558,15 +690,78 @@ def process_stream():
     data = request.get_json()
     api_key = data.get('api_key')
     
+    # Check for file upload fields
+    file_name = data.get('file_name', '')
+    file_content = data.get('file_content', '')
+    
     # Check for both 'content' and 'source' parameters for compatibility
     content = data.get('content', '')
     if not content:
         content = data.get('source', '')  # Fallback to 'source' if 'content' is empty
     
+    # Handle file content if provided
+    if file_name and file_content:
+        try:
+            # Extract file extension
+            file_ext = file_name.split('.')[-1].lower() if '.' in file_name else 'txt'
+            print(f"Processing uploaded file: {file_name} with extension {file_ext}")
+            
+            # Create a temporary file
+            temp_file_path = f"/tmp/{file_name}"
+            
+            # For binary files (PDF, DOCX, etc.), decode base64
+            try:
+                file_content_bytes = base64.b64decode(file_content)
+                print(f"Successfully decoded base64 content, size: {len(file_content_bytes)} bytes")
+            except Exception as decode_error:
+                print(f"Error decoding base64 content: {str(decode_error)}")
+                # Try to fix padding if that's the issue
+                padded_content = file_content + '=' * (4 - len(file_content) % 4) if len(file_content) % 4 != 0 else file_content
+                file_content_bytes = base64.b64decode(padded_content)
+                print(f"Successfully decoded base64 content after padding fix, size: {len(file_content_bytes)} bytes")
+            
+            with open(temp_file_path, 'wb') as f:
+                f.write(file_content_bytes)
+            print(f"Wrote temporary file to {temp_file_path}")
+            
+            # Process the file based on type
+            if file_ext == 'pdf':
+                # Process PDF
+                print(f"Processing PDF file")
+                reader = PyPDF2.PdfReader(temp_file_path)
+                text_content = ""
+                for page_num in range(len(reader.pages)):
+                    text_content += reader.pages[page_num].extract_text() + "\n"
+                content = text_content
+                print(f"Extracted {len(content)} characters from PDF")
+                
+            elif file_ext in ['docx', 'doc']:
+                # Process Word document
+                print(f"Processing Word document")
+                doc = docx.Document(temp_file_path)
+                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                print(f"Extracted {len(content)} characters from Word document")
+                
+            else:
+                # For text-based files, assume it's already decoded properly
+                print(f"Processing text-based file")
+                with open(temp_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                print(f"Read {len(content)} characters from text file")
+                
+            print(f"Successfully processed uploaded file: {file_name}, extracted {len(content)} characters")
+            
+        except Exception as e:
+            error_msg = f"Error processing file upload: {str(e)}"
+            print(error_msg)
+            traceback_str = traceback.format_exc()
+            print(f"Traceback: {traceback_str}")
+            return jsonify({"success": False, "error": error_msg}), 400
+    
     # If both are empty, return an error
     if not content:
         return jsonify({"success": False, "error": "Source code or text is required"}), 400
-        
+    
     format_prompt = data.get('format_prompt', '')
     model = data.get('model', 'claude-3-7-sonnet-20250219')  # Updated to Claude 3.7
     max_tokens = int(data.get('max_tokens', DEFAULT_MAX_TOKENS))
@@ -616,7 +811,7 @@ def process_stream():
     }
     
     # Prepare system prompt
-    system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.* For large outputs, make sure the HTML can be incrementally rendered and uses efficient DOM structures.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.)."
+    system_prompt = "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.* For large outputs, make sure the HTML can be incrementally rendered and uses efficient DOM structures.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.Your output is only one HTML file, do not present any other notes on the HTML.)."
     
     # Enhanced system prompt for large content handling
     if len(content) > 50000:  # If content is large
@@ -923,9 +1118,10 @@ def process_stream():
                 if hasattr(stream, "usage"):
                     usage_data = {
                         "input_tokens": stream.usage.input_tokens if hasattr(stream.usage, "input_tokens") else 0,
-                        "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0,
-                        "thinking_tokens": stream.usage.thinking_tokens if hasattr(stream.usage, "thinking_tokens") else 0
+                        "output_tokens": stream.usage.output_tokens if hasattr(stream.usage, "output_tokens") else 0
                     }
+                    # Calculate cost according to Anthropic pricing
+                    usage_data["total_cost"] = (usage_data["input_tokens"] / 1000000 * 3.0) + (usage_data["output_tokens"] / 1000000 * 15.0)
                 else:
                     # If usage is not available from stream, calculate manually
                     system_prompt_tokens = len(system_prompt) // 3
@@ -935,9 +1131,8 @@ def process_stream():
                     usage_data = {
                         "input_tokens": system_prompt_tokens + content_tokens,
                         "output_tokens": output_tokens,
-                        "thinking_tokens": thinking_budget,
                         "time_elapsed": round(time.time() - start_time, 2),
-                        "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
+                        "total_cost": (system_prompt_tokens + content_tokens) / 1000000 * 3.0 + output_tokens / 1000000 * 15.0
                     }
                 
                 # Mark this session as complete in the cache
@@ -1243,9 +1438,8 @@ def test_generate():
                 "usage": {
                     "input_tokens": system_prompt_tokens + content_tokens,
                     "output_tokens": output_tokens,
-                    "thinking_tokens": 0,  # No thinking tokens used in this simplified test
                     "time_elapsed": elapsed_time,
-                    "total_cost": ((system_prompt_tokens + content_tokens + output_tokens) / 1000000 * 3.0)
+                    "total_cost": (system_prompt_tokens + content_tokens) / 1000000 * 3.0 + output_tokens / 1000000 * 15.0
                 },
                 "test_mode": True,
                 "message": "Test completed with minimal token usage"
@@ -1284,7 +1478,6 @@ def test_generate():
                 "usage": {
                     "input_tokens": 0,
                     "output_tokens": 0,
-                    "thinking_tokens": 0,
                     "time_elapsed": elapsed_time,
                     "total_cost": 0
                 },
@@ -1336,7 +1529,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Configure logging for better debugging
-    import logging
     logging.basicConfig(
         level=logging.INFO if not args.debug else logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'

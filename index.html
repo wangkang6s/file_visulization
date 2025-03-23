@@ -522,7 +522,7 @@
                         </div>
                         
                         <!-- Thinking Budget Control -->
-                        <div class="mb-4">
+                        <div class="mb-4" style="display: none;">
                             <label for="thinking-budget" class="block text-sm font-medium mb-1">
                                 <i class="fas fa-brain text-primary-600 mr-1"></i> Thinking Budget: <span id="thinking-budget-value">32000</span>
                             </label>
@@ -563,6 +563,43 @@
                         <i class="fas fa-magic mr-2"></i>Generate Visualization
                     </button>
                     <p id="generate-error" class="text-red-500 mt-2 hidden">Please provide an API key and input content.</p>
+                    
+                    <!-- Immediate script to ensure button is clickable -->
+                    <script>
+                        (function() {
+                            // Force button to be clickable once the DOM is available
+                            var btn = document.getElementById('generate-btn');
+                            if (btn) {
+                                console.log('Inline script forcing generate button to be enabled');
+                                btn.disabled = false;
+                                btn.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                                btn.classList.add('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
+                                btn.style.pointerEvents = 'auto';
+                                
+                                // Direct click handler that won't be overridden
+                                btn.onclick = function(e) {
+                                    console.log('Generate button clicked via inline handler!');
+                                    e.preventDefault();
+                                    
+                                    // Find the correct generation function
+                                    if (typeof window.generateWebsite === 'function') {
+                                        window.generateWebsite();
+                                    } else {
+                                        console.error('Generation function not found - checking app context');
+                                        // Try to find functions in global scope as fallback
+                                        var anyGenFn = window.generateWebsite || window.startGeneration || window.generateContent;
+                                        if (typeof anyGenFn === 'function') {
+                                            anyGenFn();
+                                        } else {
+                                            console.error('No generation function found in any scope');
+                                            alert('Unable to start generation. Please check the console for errors.');
+                                        }
+                                    }
+                                    return false;
+                                };
+                            }
+                        })();
+                    </script>
                 </div>
             </div>
 
@@ -651,6 +688,40 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Token Analysis -->
+                <div class="p-4 bg-white rounded-lg shadow-md">
+                    <h2 class="text-xl font-semibold mb-4">
+                        <i class="fas fa-chart-bar text-primary-500 mr-2"></i>Token Usage Analysis
+                    </h2>
+                    <div class="grid grid-cols-2 gap-4 mt-6">
+                        <div class="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-md">
+                            <div class="text-sm text-gray-500 dark:text-gray-400">Input Tokens</div>
+                            <div id="input-tokens" class="text-xl font-semibold">0</div>
+                            <div class="mt-1 flex justify-center">
+                                <span class="token-block input"></span>
+                                <div class="text-xs text-gray-500">$3/million tokens</div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-md">
+                            <div class="text-sm text-gray-500 dark:text-gray-400">Output Tokens</div>
+                            <div id="output-tokens" class="text-xl font-semibold">0</div>
+                            <div class="mt-1 flex justify-center">
+                                <span class="token-block output"></span>
+                                <div class="text-xs text-gray-500">$15/million tokens</div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-md col-span-2">
+                            <div class="text-sm text-gray-500 dark:text-gray-400">Total Cost</div>
+                            <div id="total-cost" class="text-xl font-semibold">-</div>
+                            <div class="text-xs text-gray-500 mt-1">
+                                Based on Claude 3.7 pricing: Input $3/M tokens, Output $15/M tokens
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
@@ -658,7 +729,7 @@
     <!-- Footer -->
     <footer class="bg-white shadow-inner mt-8">
         <div class="container mx-auto px-4 py-6 text-center">
-            <p class="text-gray-600">Powered by <a href="https://www.anthropic.com/claude" class="text-primary-500 hover:underline" target="_blank">Anthropic Claude 3.7</a> with thinking capabilities</p>
+            <p class="text-gray-600">Powered by <a href="https://www.anthropic.com/claude" class="text-primary-500 hover:underline" target="_blank">Anthropic Claude 3.7</a></p>
             <p class="mt-2 text-gray-600">© 2025 - <span class="font-medium">File Visualizer</span> by <a href="https://www.linkedin.com/in/hubeiqiao/" class="text-primary-500 hover:underline" target="_blank">Joe Hu</a></p>
             <div class="mt-4">
                 <a href="https://buy.stripe.com/6oEdTw8OQ86S0CYcMN" class="inline-flex items-center px-4 py-2 bg-green-100 text-green-700 rounded-full hover:bg-green-200 transition-colors" target="_blank">
@@ -1610,6 +1681,48 @@
                         console.error('Error processing error event:', err);
                     }
                 });
+            }
+        });
+    </script>
+    
+    <!-- Force initialization on page load -->
+    <script>
+        // Wait for everything to be ready and ensure initialization
+        window.addEventListener('load', function() {
+            console.log('Window fully loaded, ensuring initialization completed');
+            
+            // Force app to be initialized if it hasn't been yet
+            if (typeof init === 'function') {
+                console.log('Reinitializing app from window load event');
+                init();
+            } else {
+                console.warn('Init function not found at window load time');
+            }
+            
+            // Make sure buttons are clickable
+            document.querySelectorAll('button').forEach(button => {
+                button.style.pointerEvents = 'auto';
+                button.disabled = false;
+                console.log('Enabled button:', button.id || button.textContent);
+            });
+            
+            // Special handling for generate button
+            const generateBtn = document.getElementById('generate-btn');
+            if (generateBtn) {
+                generateBtn.disabled = false;
+                generateBtn.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                generateBtn.classList.add('bg-primary-500', 'hover:bg-primary-600', 'text-white', 'cursor-pointer');
+                generateBtn.addEventListener('click', function() {
+                    console.log('Generate button clicked!');
+                    if (typeof startGeneration === 'function') {
+                        startGeneration();
+                    } else if (typeof generateWebsite === 'function') {
+                        generateWebsite();
+                    } else {
+                        console.warn('Neither startGeneration nor generateWebsite functions found');
+                    }
+                });
+                console.log('Generate button special handling applied');
             }
         });
     </script>
