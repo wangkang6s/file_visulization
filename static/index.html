@@ -448,7 +448,7 @@
                         <div>
                             <div class="flex justify-between items-center mb-1">
                                 <label for="temperature" class="font-medium text-gray-900">Creativity Level: <span id="temperature-value" class="text-primary-600">1.0</span></label>
-                                <button id="temperature-reset" class="text-xs text-primary-500 hover:underline">Reset</button>
+                                <button id="reset-temp" class="text-xs text-primary-500 hover:underline">Reset</button>
                             </div>
                             <input type="range" id="temperature" min="0" max="1" step="0.1" value="1.0" 
                                 class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
@@ -459,7 +459,7 @@
                         <div>
                             <div class="flex justify-between items-center mb-1">
                                 <label for="max-tokens" class="font-medium text-gray-900">Output Length: <span id="max-tokens-value" class="text-primary-600">128000</span></label>
-                                <button id="max-tokens-reset" class="text-xs text-primary-500 hover:underline">Reset</button>
+                                <button id="reset-max-tokens" class="text-xs text-primary-500 hover:underline">Reset</button>
                             </div>
                             <input type="range" id="max-tokens" min="1000" max="128000" step="1000" value="128000" 
                                 class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
@@ -470,7 +470,7 @@
                         <div>
                             <div class="flex justify-between items-center mb-1">
                                 <label for="thinking-budget" class="font-medium text-gray-900">Thinking Depth: <span id="thinking-budget-value" class="text-primary-600">32000</span></label>
-                                <button id="thinking-budget-reset" class="text-xs text-primary-500 hover:underline">Reset</button>
+                                <button id="reset-thinking-budget" class="text-xs text-primary-500 hover:underline">Reset</button>
                             </div>
                             <input type="range" id="thinking-budget" min="1024" max="128000" step="1024" value="32000" 
                                 class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
@@ -549,7 +549,7 @@
                             </div>
                         </div>
                         <div class="mt-3 text-xs text-gray-500">
-                            <p>Pricing: Input - $3/million tokens, Output - $15/million tokens, Thinking - $3/million tokens</p>
+                            <p>Pricing: Input - $3/million tokens, Output - $15/million tokens</p>
                             <p class="mt-1">Typical generations cost between $0.20-$2.00 depending on content size and complexity.</p>
                         </div>
                     </div>
@@ -575,7 +575,7 @@
                         <div class="col-span-1">
                             <div class="bg-white rounded-xl p-4 shadow">
                                 <div class="flex justify-between items-center mb-4">
-                                    <h3 class="text-lg font-medium">Generated Website</h3>
+                                    <h3 class="text-lg font-medium">Generated HTML</h3>
                                     <div class="flex space-x-2">
                                         <button id="copy-html" class="btn-secondary">
                                             <i class="fas fa-copy mr-1"></i> Copy
@@ -585,7 +585,9 @@
                                         </button>
                                     </div>
                                 </div>
-                                <pre id="html-output" class="language-html overflow-auto rounded-lg p-4 bg-gray-50"></pre>
+                                <div class="relative">
+                                    <pre id="raw-html-container" class="language-html rounded-lg p-4 bg-gray-800 text-white overflow-hidden" style="max-height: 500px; overflow-y: auto;"><code id="raw-html" class="language-html"></code></pre>
+                                </div>
                             </div>
                         </div>
                     </div>

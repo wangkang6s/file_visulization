@@ -15,6 +15,13 @@ const RECONNECT_DELAY = 1000; // 1 second
 const MAX_SEGMENT_SIZE = 16384; // 16KB to match server setting
 const MAX_HTML_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB before using incremental rendering
 
+// Global variables
+let generatedHtml = ''; // Store the generated HTML
+let reconnectAttempts = 0;
+let currentSessionId = null;
+let lastChunkId = null;
+let chunkCount = 0;
+
 // Elements
 const elements = {
     // Theme
@@ -193,9 +200,9 @@ function init() {
     console.log("App initialized");
 }
 
-// Helper function to format the cost display - showing dash when 0 or undefined
+// Format cost to display either a dollar amount or dash if zero
 function formatCostDisplay(cost) {
-    if (!cost || cost <= 0) {
+    if (!cost || cost === 0 || isNaN(cost)) {
         return '-';
     }
     return `$${cost.toFixed(4)}`;
@@ -250,64 +257,75 @@ function setupEventListeners() {
             // Always use light theme
             document.documentElement.classList.remove('dark');
             localStorage.setItem('theme', 'light');
-            // Update theme toggle icon
-            if (elements.themeToggle.innerHTML.includes('fa-moon')) {
-                elements.themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
-            }
+            
+            toggleTheme();
         });
     }
     
-    // API Key
-    if (elements.apiKeyInput) {
-        elements.apiKeyInput.addEventListener('input', handleApiKeyInput);
-    }
+    // API Key validation
     if (elements.validateKeyBtn) {
         elements.validateKeyBtn.addEventListener('click', validateApiKey);
     }
     
-    // Tabs
-    if (elements.fileTab) {
-        elements.fileTab.addEventListener('click', () => switchTab('file'));
-    }
-    if (elements.textTab) {
-        elements.textTab.addEventListener('click', () => switchTab('text'));
+    // Load saved API key
+    if (elements.apiKeyInput) {
+        // Try to load from localStorage
+        const savedKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+        if (savedKey) {
+            elements.apiKeyInput.value = savedKey;
+            // Validate the key on page load
+            setTimeout(validateApiKey, 1000); // Delay to allow the page to load
+        }
+        
+        elements.apiKeyInput.addEventListener('input', handleApiKeyInput);
     }
     
-    // File Upload
+    // Tab switching
+    if (elements.fileTab) {
+        elements.fileTab.addEventListener('click', function() {
+            switchTab('file');
+        });
+    }
+    
+    if (elements.textTab) {
+        elements.textTab.addEventListener('click', function() {
+            switchTab('text');
+        });
+    }
+    
+    // File upload
     if (elements.fileUpload) {
         elements.fileUpload.addEventListener('change', handleFileUpload);
     }
-    if (elements.dropArea) {
-        elements.dropArea.addEventListener('click', () => elements.fileUpload.click());
-    }
     
-    // Text Input
+    // Text input
     if (elements.inputText) {
         elements.inputText.addEventListener('input', handleTextInput);
     }
     
-    // Temperature
+    // Range inputs
     if (elements.temperature) {
         elements.temperature.addEventListener('input', updateTemperature);
     }
-    if (elements.temperatureReset) {
-        elements.temperatureReset.addEventListener('click', resetTemperature);
+    
+    if (document.getElementById('reset-temp')) {
+        document.getElementById('reset-temp').addEventListener('click', resetTemperature);
     }
     
-    // Max Tokens
     if (elements.maxTokens) {
         elements.maxTokens.addEventListener('input', updateMaxTokens);
     }
-    if (elements.maxTokensReset) {
-        elements.maxTokensReset.addEventListener('click', resetMaxTokens);
+    
+    if (document.getElementById('reset-max-tokens')) {
+        document.getElementById('reset-max-tokens').addEventListener('click', resetMaxTokens);
     }
     
-    // Thinking Budget
     if (elements.thinkingBudget) {
         elements.thinkingBudget.addEventListener('input', updateThinkingBudget);
     }
-    if (elements.thinkingBudgetReset) {
-        elements.thinkingBudgetReset.addEventListener('click', resetThinkingBudget);
+    
+    if (document.getElementById('reset-thinking-budget')) {
+        document.getElementById('reset-thinking-budget').addEventListener('click', resetThinkingBudget);
     }
     
     // Generate
@@ -1017,6 +1035,7 @@ async function generateWebsite() {
                     console.log('Test generate returned an error with HTML:', result.error);
                     // Still use the HTML even though it's an error response
                     state.generatedHtml = result.html;
+                    generatedHtml = result.html; // Update global variable too
                     
                     // Show the error message
                     if (result.code === 529) {
@@ -1027,6 +1046,7 @@ async function generateWebsite() {
                 } else {
                     // Process the successful test result
                     state.generatedHtml = result.html;
+                    generatedHtml = result.html; // Update global variable too
                 }
                 
                 // Update UI with the results
@@ -1252,6 +1272,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     console.log('End message received from local server');
                                     // Store the generated HTML for later use
                                     state.generatedHtml = generatedContent;
+                                    generatedHtml = generatedContent; // Update global variable too
+                                    
+                                    // Final UI update
+                                    updateHtmlDisplay();
                                 }
                                 
                                 // Handle message complete from Vercel
@@ -1260,6 +1284,10 @@ async function generateHTMLStreamWithReconnection(apiKey, source, formatPrompt, 
                                     
                                     // Ensure we store the generated HTML
                                     state.generatedHtml = generatedContent;
+                                    generatedHtml = generatedContent; // Update global variable too
+                                    
+                                    // Final UI update
+                                    updateHtmlDisplay();
                                     
                                     // Update usage statistics
                                     if (data.usage) {
@@ -1614,47 +1642,45 @@ async function processWithStreaming(data) {
 }
 
 function updateHtmlDisplay() {
-    if (!state.generatedHtml || !elements.htmlOutput) return;
+    const htmlContent = state.generatedHtml || '';
     
-    // Escape HTML entities to prevent code execution in the pre tag
-    const escapedHtml = escapeHtml(state.generatedHtml);
-    elements.htmlOutput.value = state.generatedHtml;
-    
-    // If Prism.js is available, highlight the code
-    if (window.Prism) {
-        Prism.highlightElement(elements.htmlOutput);
+    // Set the raw HTML content for display
+    const rawHtmlElement = document.getElementById('raw-html');
+    if (rawHtmlElement) {
+        // Escape special characters for display
+        rawHtmlElement.textContent = htmlContent;
+        
+        // Apply syntax highlighting
+        if (window.Prism) {
+            Prism.highlightElement(rawHtmlElement);
+        }
     }
     
-    // Enable the copy and download buttons
-    if (elements.copyHtml) {
-        elements.copyHtml.disabled = false;
-        elements.copyHtml.classList.remove('opacity-50', 'cursor-not-allowed');
-    }
-    if (elements.downloadHtml) {
-        elements.downloadHtml.disabled = false;
-        elements.downloadHtml.classList.remove('opacity-50', 'cursor-not-allowed');
-    }
+    // If preview is available, update it
+    updatePreview();
+    
+    // Show the result section with both preview and code
+    showResultSection();
 }
 
 function updatePreview() {
-    if (!state.generatedHtml) return;
+    const htmlContent = state.generatedHtml || '';
+    if (!htmlContent) return;
+    
+    // Get the iframe
+    const iframe = document.getElementById('preview-iframe');
+    if (!iframe) return;
     
     try {
-        const iframe = elements.previewIframe;
-        if (!iframe) return;
+        // Write the HTML to the iframe
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        iframeDoc.open();
+        iframeDoc.write(htmlContent);
+        iframeDoc.close();
         
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        doc.open();
-        doc.write(state.generatedHtml);
-        doc.close();
-        
-        // Enable the "Open in New Tab" button
-        if (elements.openPreview) {
-            elements.openPreview.disabled = false;
-            elements.openPreview.classList.remove('opacity-50', 'cursor-not-allowed');
-        }
-    } catch (e) {
-        console.error('Error updating preview:', e);
+        console.log('Preview updated with HTML content of length:', htmlContent.length);
+    } catch (error) {
+        console.error('Error updating preview:', error);
     }
 }
 
@@ -1699,32 +1725,54 @@ function resetGenerationUI(success = false) {
 
 // Output Actions
 function copyHtmlToClipboard() {
-    if (!state.generatedHtml) return;
+    const htmlContent = state.generatedHtml || '';
+    if (!htmlContent) {
+        showToast('No HTML content to copy', 'error');
+        return;
+    }
     
     try {
-        navigator.clipboard.writeText(state.generatedHtml).then(() => {
-            showToast('Website code copied to clipboard!', 'success');
+        navigator.clipboard.writeText(htmlContent).then(() => {
+            showToast('HTML copied to clipboard!', 'success');
+        }).catch(err => {
+            console.error('Failed to copy:', err);
+            
+            // Fallback copy method for browsers without clipboard API
+            const textarea = document.createElement('textarea');
+            textarea.value = htmlContent;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            
+            showToast('HTML copied to clipboard!', 'success');
         });
-    } catch (e) {
-        console.error('Error copying to clipboard:', e);
-        showToast('Failed to copy to clipboard. Please try again.', 'error');
+    } catch (error) {
+        console.error('Error copying to clipboard:', error);
+        showToast('Failed to copy HTML. Please try again.', 'error');
     }
 }
 
 function downloadHtmlFile() {
-    if (!state.generatedHtml) return;
+    const htmlContent = state.generatedHtml || '';
+    if (!htmlContent) {
+        showToast('No HTML content to download', 'error');
+        return;
+    }
     
     try {
-        const blob = new Blob([state.generatedHtml], { type: 'text/html' });
+        const blob = new Blob([htmlContent], { type: 'text/html' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         
-        // Generate filename based on content when no file is uploaded
+        // Create a descriptive filename
         let filename = 'visualization.html';
-        if (state.activeTab === 'text' && elements.textInput.value) {
+        if (state.activeTab === 'text' && elements.inputText && elements.inputText.value) {
             // Extract first few words from text input to create filename
-            const firstFewWords = elements.textInput.value
+            const firstFewWords = elements.inputText.value
                 .trim()
                 .split(/\s+/)
                 .slice(0, 4)
@@ -1748,16 +1796,27 @@ function downloadHtmlFile() {
         URL.revokeObjectURL(url);
         
         showToast('Website file downloaded!', 'success');
-    } catch (e) {
-        console.error('Error downloading file:', e);
+    } catch (error) {
+        console.error('Error downloading file:', error);
         showToast('Failed to download file. Please try again.', 'error');
     }
 }
 
 function openPreviewInNewTab() {
-    const blob = new Blob([state.generatedHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
+    const htmlContent = state.generatedHtml || '';
+    if (!htmlContent) {
+        showToast('No HTML content to preview', 'error');
+        return;
+    }
+    
+    try {
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+    } catch (error) {
+        console.error('Error opening preview:', error);
+        showToast('Failed to open preview. Please try again.', 'error');
+    }
 }
 
 // Toast Notification
