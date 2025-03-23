@@ -1,11 +1,38 @@
-.git
-.venv
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.env
+.venv/
 env/
 venv/
-.env
-.venv 
+ENV/
+
+# Development files
+.git/
+.github/
+.gitignore
+.DS_Store
+
+# Local config files
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Test files
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Docker files
+Dockerfile
+docker-compose.yml
+
+# Unnecessary scripts
+start_*.sh
+kill_servers.sh 
