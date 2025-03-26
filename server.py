@@ -1615,7 +1615,7 @@ def process_gemini():
     
     try:
         # Use our helper function to create a Gemini client
-        client = create_gemini_client(api_key)
+        model = create_gemini_client(api_key)
         
         # Prepare user message with content and additional prompt
         user_content = content
@@ -1625,7 +1625,7 @@ def process_gemini():
         print("Creating Gemini model...")
         
         # Get the model
-        model = client.get_model(GEMINI_MODEL)
+        # model = client.get_model(GEMINI_MODEL)
         
         # Configure generation parameters with more reliable settings
         generation_config = {
