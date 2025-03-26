@@ -83,8 +83,8 @@ BACKOFF_FACTOR = 1.3  # Use 1.3 instead of 1.5 for more gradual increase
 
 # Gemini-specific settings
 GEMINI_MODEL = "gemini-2.5-pro-exp-03-25"
-GEMINI_MAX_OUTPUT_TOKENS = 65536
-GEMINI_TEMPERATURE = 1.0
+GEMINI_MAX_OUTPUT_TOKENS = 655360
+GEMINI_TEMPERATURE = 1.0 
 GEMINI_TOP_P = 0.95
 GEMINI_TOP_K = 64
 
@@ -1615,7 +1615,7 @@ def process_gemini():
     
     try:
         # Use our helper function to create a Gemini client
-        model = create_gemini_client(api_key)
+        client = create_gemini_client(api_key)
         
         # Prepare user message with content and additional prompt
         user_content = content
@@ -1625,7 +1625,7 @@ def process_gemini():
         print("Creating Gemini model...")
         
         # Get the model
-        # model = client.get_model(GEMINI_MODEL)
+        model = client.get_model(GEMINI_MODEL)
         
         # Configure generation parameters with more reliable settings
         generation_config = {
