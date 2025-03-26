@@ -23,9 +23,14 @@ import base64
 import random 
 import socket
 import argparse
-import sys
 import logging
 from datetime import datetime
+
+# Import version
+try:
+    from . import __version__
+except ImportError:
+    __version__ = "0.4.5"  # Fallback version
 
 # Import Google Generative AI package
 try:
@@ -88,7 +93,10 @@ SYSTEM_INSTRUCTION = """I will provide you with a file or a content, analyze its
 
 @app.route('/')
 def serve_index():
-    return send_from_directory('static', 'index.html')
+    """Serve the main index.html file with version information in headers."""
+    response = send_from_directory('static', 'index.html')
+    response.headers['X-App-Version'] = __version__
+    return response
 
 @app.route('/<path:path>')
 def static_files(path):
@@ -188,7 +196,7 @@ def process():
                 "model": model,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
-                "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).",
+                "system": "I will provide you with a file or a content, analyze its content, and transform it into a visually appealing and well-structured webpage.### Content Requirements* Maintain the core information from the original file while presenting it in a clearer and more visually engaging format.⠀Design Style* Follow a modern and minimalistic design inspired by Linear App.* Use a clear visual hierarchy to emphasize important content.* Adopt a professional and harmonious color scheme that is easy on the eyes for extended reading.⠀Technical Specifications* Use HTML5, TailwindCSS 3.0+ (via CDN), and necessary JavaScript.* Implement a fully functional dark/light mode toggle, defaulting to the system setting.* Ensure clean, well-structured code with appropriate comments for easy understanding and maintenance.⠀Responsive Design* The page must be fully responsive, adapting seamlessly to mobile, tablet, and desktop screens.* Optimize layout and typography for different screen sizes.* Ensure a smooth and intuitive touch experience on mobile devices.⠀Icons & Visual Elements* Use professional icon libraries like Font Awesome or Material Icons (via CDN).* Integrate illustrations or charts that best represent the content.* Avoid using emojis as primary icons.* Check if any icons cannot be loaded.⠀User Interaction & ExperienceEnhance the user experience with subtle micro-interactions:* Buttons should have slight enlargement and color transitions on hover.* Cards should feature soft shadows and border effects on hover.* Implement smooth scrolling effects throughout the page.* Content blocks should have an elegant fade-in animation on load.⠀Performance Optimization* Ensure fast page loading by avoiding large, unnecessary resources.* Use modern image formats (WebP) with proper compression.* Implement lazy loading for content-heavy pages.⠀Output Requirements* Deliver a fully functional standalone HTML file, including all necessary CSS and JavaScript.* Ensure the code meets W3C standards with no errors or warnings.* Maintain consistent design and functionality across different browsers.* Your output is only one HTML file, do not present any other notes on the HTML. Also, try your best to visualize the whole content.⠀Create the most effective and visually appealing webpage based on the uploaded file's content type (document, data, images, etc.).",
                 "messages": [{"role": "user", "content": user_content}],
             }
             
@@ -1619,12 +1627,20 @@ def process_gemini():
         # Get the model
         model = client.get_model(GEMINI_MODEL)
         
-        # Configure generation parameters
+        # Configure generation parameters with more reliable settings
         generation_config = {
             "max_output_tokens": max_tokens,
             "temperature": temperature,
             "top_p": GEMINI_TOP_P,
             "top_k": GEMINI_TOP_K
+        }
+        
+        # Use more reliable safety settings to prevent empty responses
+        safety_settings = {
+            "harassment": "block_none",
+            "hate_speech": "block_none",
+            "sexual": "block_none",
+            "dangerous": "block_none",
         }
         
         # Create the prompt
@@ -1637,27 +1653,100 @@ Here is the content to transform into a website:
 """
         
         # Generate content
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
+        print(f"Generating content with {GEMINI_MODEL}, max_tokens={max_tokens}, temperature={temperature}")
+        
+        # Use more robust error handling and retry logic
+        max_retries = 3
+        retry_count = 0
+        last_error = None
+        
+        while retry_count < max_retries:
+            try:
+                response = model.generate_content(
+                    prompt,
+                    generation_config=generation_config,
+                    safety_settings=safety_settings
+                )
+                
+                # We got a response, break out of retry loop
+                break
+                
+            except Exception as e:
+                last_error = e
+                retry_count += 1
+                print(f"Gemini API error (attempt {retry_count}/{max_retries}): {str(e)}")
+                
+                # Wait before retrying
+                if retry_count < max_retries:
+                    wait_time = 2 ** retry_count  # Exponential backoff
+                    print(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    # Max retries reached, raise the last error
+                    raise
         
         # Extract the HTML from the response
         html_content = ""
+        
+        # Try multiple approaches to extract content
         if hasattr(response, 'text'):
             html_content = response.text
-        else:
-            # Try to access response parts if available
-            if hasattr(response, 'parts') and response.parts:
-                html_content = response.parts[0].text
+        elif hasattr(response, 'parts') and response.parts:
+            html_content = response.parts[0].text
+        
+        # Clean HTML content if it contains markdown-style code blocks
+        if html_content and ('```html' in html_content or '```' in html_content):
+            # Extract the actual HTML from between the markdown code blocks
+            print("Detected markdown code blocks in Gemini response, extracting HTML...")
+            
+            # First try with ```html specific tag
+            html_match = re.search(r'```html\s*([\s\S]*?)\s*```', html_content)
+            if html_match and html_match[1]:
+                html_content = html_match[1].strip()
+                print(f"Extracted HTML from markdown code blocks, new length: {len(html_content)}")
+            else:
+                # Try with just ``` blocks
+                html_match = re.search(r'```\s*([\s\S]*?)\s*```', html_content)
+                if html_match and html_match[1]:
+                    html_content = html_match[1].strip()
+                    print(f"Extracted HTML from generic markdown blocks, new length: {len(html_content)}")
         
         # If we still don't have content, use string representation
         if not html_content:
+            print("Warning: Could not extract HTML content using standard methods")
             html_content = str(response)
         
+        # Verify that the content looks like HTML
+        if not html_content.strip().startswith('<') and not '<html' in html_content:
+            print(f"Warning: Content doesn't appear to be HTML. Content starts with: {html_content[:100]}")
+            
+            # Attempt to fix by wrapping in HTML tags if it's just text content
+            if not html_content.strip().startswith('<'):
+                print("Attempting to fix by wrapping in HTML tags")
+                html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generated Content</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+    <div class="container mx-auto p-4">
+        {html_content}
+    </div>
+    <script>
+        // Simple dark mode toggle
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {{
+            document.documentElement.classList.add('dark');
+        }}
+    </script>
+</body>
+</html>
+"""
+        
         # Get usage stats (approximate since Gemini doesn't provide exact token counts)
-        # Use a more accurate estimation method based on token counting rules
-        # For Gemini, we'll determine accurate token count by counting the actual input
         input_tokens = len(prompt.split()) * 1.3  # Rough estimate: ~1.3 tokens per word
         output_tokens = len(html_content.split()) * 1.3
         
@@ -1685,8 +1774,46 @@ Here is the content to transform into a website:
     
     except Exception as e:
         error_message = str(e)
+        traceback_str = traceback.format_exc()
         print(f"Error in /api/process-gemini: {error_message}")
-        return jsonify({'error': f'Server error: {error_message}'}), 500
+        print(f"Traceback: {traceback_str}")
+        
+        # Create a graceful fallback error page as HTML
+        error_html = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error Processing Content</title>
+            <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+        </head>
+        <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+            <div class="container mx-auto p-8 max-w-3xl">
+                <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h1 class="text-2xl font-bold text-red-600 mb-4">Error Processing Content</h1>
+                    <p class="mb-4">There was an error processing your content with the Gemini API:</p>
+                    <div class="bg-gray-100 dark:bg-gray-700 p-4 rounded overflow-auto mb-4">
+                        <code class="text-sm">{error_message}</code>
+                    </div>
+                    <p class="mb-2">Possible solutions:</p>
+                    <ul class="list-disc pl-5 mb-4">
+                        <li>Try again with a smaller content size</li>
+                        <li>Check your Gemini API key</li>
+                        <li>Try with a different content format</li>
+                        <li>Switch to the Claude API if available</li>
+                    </ul>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Return error as both JSON and HTML
+        return jsonify({
+            'error': f'Server error: {error_message}', 
+            'html': error_html
+        }), 500
 
 # Add a streaming endpoint for Gemini
 @app.route('/api/process-gemini-stream', methods=['POST'])
@@ -1772,20 +1899,55 @@ Here is the content to transform into a website:
             }
             
             # Generate content with streaming
-            stream_response = model.generate_content(
-                prompt,
-                generation_config=generation_config,
-                stream=True
-            )
-            
-            # Use our custom streaming response class
-            with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
-                for chunk in gemini_stream:
-                    yield chunk
+            try:
+                print(f"Starting Gemini content generation with model {GEMINI_MODEL}")
+                print(f"Generation config: max_tokens={generation_config['max_output_tokens']}, temp={generation_config['temperature']}")
+                
+                # Use more reliable safety settings to prevent empty responses
+                safety_settings = {
+                    "harassment": "block_none",
+                    "hate_speech": "block_none",
+                    "sexual": "block_none",
+                    "dangerous": "block_none",
+                }
+                
+                # Generate content with the specified configurations
+                stream_response = model.generate_content(
+                    prompt,
+                    generation_config=generation_config,
+                    safety_settings=safety_settings,
+                    stream=True
+                )
+                
+                # Log success
+                print("Successfully created Gemini stream response object")
+                
+                # Use our custom streaming response class
+                with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
+                    print(f"Entering GeminiStreamingResponse context with session ID: {session_id}")
+                    chunk_count = 0
+                    for chunk in gemini_stream:
+                        chunk_count += 1
+                        if chunk_count % 10 == 0:
+                            print(f"Processed {chunk_count} chunks from Gemini stream")
+                        yield chunk
                     
-                # Stream end event
-                yield format_stream_event("stream_end", {
-                    "message": "Stream complete",
+                    print(f"Completed streaming {chunk_count} chunks from Gemini")
+                    # Stream end event
+                    yield format_stream_event("stream_end", {
+                        "message": "Stream complete",
+                        "session_id": session_id
+                    })
+            except Exception as e:
+                error_message = str(e)
+                print(f"Error during Gemini content generation: {error_message}")
+                traceback_str = traceback.format_exc()
+                print(f"Traceback: {traceback_str}")
+                
+                yield format_stream_event("error", {
+                    "type": "error",
+                    "error": error_message,
+                    "details": traceback_str,
                     "session_id": session_id
                 })
             
@@ -1804,6 +1966,18 @@ Here is the content to transform into a website:
         stream_with_context(gemini_stream_generator()),
         content_type='text/event-stream'
     )
+
+@app.route('/api/version', methods=['GET'])
+def get_version():
+    """Return the application version information."""
+    return jsonify({
+        'version': __version__,
+        'name': 'File Visualization',
+        'gemini_available': GEMINI_AVAILABLE,
+        'gemini_model': GEMINI_MODEL,
+        'claude_model': 'claude-3-7-sonnet-20250219',
+        'timestamp': datetime.now().isoformat()
+    })
 
 if __name__ == "__main__":
     # Parse command line arguments

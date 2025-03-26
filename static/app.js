@@ -175,6 +175,9 @@ function init() {
     // Ensure the generate button state is correct
     setTimeout(updateGenerateButtonState, 200);
     
+    // Fetch and display version information
+    fetchVersionInfo();
+    
     // Force enable the generate button for testing
     setTimeout(() => {
         console.log('Forcefully ensuring generate button is enabled');
@@ -217,6 +220,25 @@ function init() {
     }, 1000);
     
     console.log("App initialized");
+}
+
+// Fetch version information from the API
+async function fetchVersionInfo() {
+    try {
+        const response = await fetch(`${API_URL}/api/version`);
+        if (response.ok) {
+            const data = await response.json();
+            // Update version display in the footer
+            const versionElement = document.getElementById('app-version');
+            if (versionElement) {
+                versionElement.textContent = `v${data.version}`;
+                versionElement.classList.remove('hidden');
+            }
+            console.log(`Application version: ${data.version}`);
+        }
+    } catch (error) {
+        console.error('Error fetching version info:', error);
+    }
 }
 
 // Format cost to display either a dollar amount or dash if zero
@@ -434,6 +456,44 @@ async function validateApiKey() {
         updateKeyStatus('invalid');
         return null;
     }
+}
+
+// Function to get the API key from state or input element
+function getApiKey() {
+    // First check if we have an API key in state
+    if (state.apiKey && state.apiKey.trim()) {
+        return state.apiKey.trim();
+    }
+    
+    // If not in state, check if we have an input element with an API key
+    if (elements.apiKeyInput && elements.apiKeyInput.value.trim()) {
+        // Update state with the key from the input
+        state.apiKey = elements.apiKeyInput.value.trim();
+        return state.apiKey;
+    }
+    
+    // If API provider is set, try to load from local storage
+    if (state.apiProvider) {
+        const storageKey = state.apiProvider === 'anthropic' ? 
+            ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+        const storedKey = localStorage.getItem(storageKey);
+        
+        if (storedKey && storedKey.trim()) {
+            // Update state with the stored key
+            state.apiKey = storedKey.trim();
+            
+            // Also update the input field if it exists
+            if (elements.apiKeyInput) {
+                elements.apiKeyInput.value = state.apiKey;
+            }
+            
+            return state.apiKey;
+        }
+    }
+    
+    // No API key found
+    console.warn('No API key found in state, input element, or local storage');
+    return null;
 }
 
 function updateKeyStatus(status) {
@@ -933,92 +993,117 @@ function updateGenerateButtonState() {
 // Generate Website
 async function generateWebsite() {
     try {
-        // Validate API key
-        const apiKey = elements.apiKeyInput ? elements.apiKeyInput.value.trim() : '';
-        if (!apiKey) {
-            showToast('Please enter your API key', 'error');
+        if (state.processing) return;
+        
+        // Set processing state
+        state.processing = true;
+        console.log("Generating website with:", `provider=${state.apiProvider}, maxTokens=${state.maxTokens}, temperature=${state.temperature}, thinkingBudget=${state.thinkingBudget}`);
+        
+        // Clear any previous content
+        state.generatedHtml = '';
+        
+        // Get content based on active tab
+        const source = getInputContent();
+        if (!source) {
+            showToast('Please enter some content or upload a file first.', 'error');
+            state.processing = false;
             return;
         }
         
-        // Set processing flag
-        state.processing = true;
-        state.userScrolledDuringGeneration = false; // Reset scroll tracking
-        
-        // Set up scroll tracking during generation
-        const scrollHandler = () => {
-            if (state.processing) {
-                state.userScrolledDuringGeneration = true;
-                console.log('User scrolled during generation');
-            }
-        };
-        window.addEventListener('scroll', scrollHandler);
-        
-        // Disable inputs during generation
-        disableInputsDuringGeneration(true);
-        
-        // Show processing UI
+        // Disable generate button during generation
         if (elements.generateBtn) {
             elements.generateBtn.disabled = true;
             elements.generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Generating...';
         }
         
-        // Show processing status
+        // Disable inputs during generation
+        disableInputsDuringGeneration(true);
+        
+        // Show the processing status
         startProcessingAnimation();
         
-        // Start elapsed time counter
+        // Start timing the generation
         startElapsedTimeCounter();
         
-        // Get input content based on active tab
-        const content = getInputContent();
-        if (!content) {
-            showToast('Please enter some text or upload a file', 'error');
-            resetGenerationUI();
-            window.removeEventListener('scroll', scrollHandler);
-            return;
-        }
+        // Register scroll handler to track user scrolling during generation
+        const scrollHandler = () => {
+            // If the user scrolls during generation, we'll want to note that
+            console.log("User scrolled during generation");
+        };
         
-        // Prepare settings from UI
-        const formatPrompt = elements.formatPrompt ? elements.formatPrompt.value.trim() : '';
-        const apiProvider = state.apiProvider;
-        const maxTokens = parseInt(elements.maxTokens ? elements.maxTokens.value : DEFAULT_MAX_TOKENS);
-        const temperature = parseFloat(elements.temperature ? elements.temperature.value : 0.7);
-        const thinkingBudget = parseInt(elements.thinkingBudget ? elements.thinkingBudget.value : 0);
+        window.addEventListener('scroll', scrollHandler);
         
-        console.log(`Generating website with: provider=${apiProvider}, maxTokens=${maxTokens}, temperature=${temperature}, thinkingBudget=${thinkingBudget}`);
-        
-        // Reset token display
-        resetTokenStats();
-        
-        // Process with the selected API provider
-        if (apiProvider === 'gemini') {
-            // Use Gemini API with streaming if supported, otherwise use non-streaming
-            try {
-                await generateGeminiHTMLStream(
-                    apiKey, content, formatPrompt, 
-                    maxTokens, temperature
-                );
-            } catch (streamError) {
-                console.warn('Gemini streaming failed, falling back to non-streaming API:', streamError);
-                await generateGeminiHTML(
-                    apiKey, content, formatPrompt, 
-                    maxTokens, temperature
+        try {
+            // Validate API key
+            const apiKey = getApiKey();
+            if (!apiKey) {
+                showToast('Please enter a valid API key', 'error');
+                resetGenerationUI();
+                window.removeEventListener('scroll', scrollHandler);
+                return;
+            }
+            
+            let result = '';
+            
+            // Get format prompt
+            const formatPrompt = elements.formatPrompt ? elements.formatPrompt.value : '';
+            
+            // Different generation methods based on the API provider
+            if (state.apiProvider === 'gemini') {
+                // For Gemini, first try the non-streaming method which seems more reliable
+                try {
+                    console.log("Trying Gemini non-streaming method first");
+                    result = await generateGeminiHTML(
+                        apiKey,
+                        source,
+                        formatPrompt,
+                        state.maxTokens,
+                        state.temperature
+                    );
+                } catch (geminiError) {
+                    console.error("Non-streaming Gemini method failed:", geminiError);
+                    
+                    // Fall back to streaming method if the non-streaming method fails
+                    console.log("Falling back to Gemini streaming method");
+                    result = await generateGeminiHTMLStream(
+                        apiKey,
+                        source,
+                        formatPrompt,
+                        state.maxTokens,
+                        state.temperature
+                    );
+                }
+            } else {
+                // For Claude/Anthropic, use streaming with reconnection support
+                result = await generateHTMLStreamWithReconnection(
+                    apiKey,
+                    source,
+                    formatPrompt,
+                    state.model,
+                    state.maxTokens,
+                    state.temperature,
+                    state.thinkingBudget
                 );
             }
-        } else {
-            // Use Claude API with streaming
-            await generateHTMLStreamWithReconnection(
-                apiKey, content, formatPrompt, 
-                'claude-3-7-sonnet-20240307', maxTokens, 
-                temperature, thinkingBudget
-            );
+            
+            if (result) {
+                showResultSection();
+                resetGenerationUI(true); // Success = true
+            } else {
+                resetGenerationUI(false); // Success = false
+            }
+            
+        } catch (error) {
+            console.error('Generation error:', error);
+            showToast(`Error: ${error.message}`, 'error');
+            resetGenerationUI(false);
+        } finally {
+            window.removeEventListener('scroll', scrollHandler);
         }
-        
-        // Clean up scroll tracking
-        window.removeEventListener('scroll', scrollHandler);
     } catch (error) {
-        console.error('Generation error:', error);
-        showToast(`Error: ${error.message}`, 'error');
-        resetGenerationUI();
+        console.error('Unexpected error:', error);
+        showToast(`Unexpected error: ${error.message}`, 'error');
+        resetGenerationUI(false);
     }
 }
 
@@ -1062,6 +1147,7 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
     // Prepare state variables for streaming
     let generatedContent = '';
     let sessionId = '';
+    let lastKeepAliveTime = Date.now();
     
     try {
         // Calculate approximate input tokens right away (1.3 tokens per word)
@@ -1092,6 +1178,7 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         
         // Start the streaming request
         console.log('Making fetch request to', `${API_URL}/api/process-gemini-stream`);
+        const streamStartTime = Date.now();
         const response = await fetch(`${API_URL}/api/process-gemini-stream`, {
             method: 'POST',
             headers: {
@@ -1111,80 +1198,148 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         let htmlBuffer = '';
         let lastProcessedTime = Date.now();
         let isCompletionSeen = false;
+        let hasReceivedContent = false;
+        let keepaliveCounter = 0;
+        let timeoutCounter = 0;
+        
+        // Start a regular check for stream health
+        const healthCheckInterval = setInterval(() => {
+            const now = Date.now();
+            const timeSinceLastKeepalive = now - lastKeepAliveTime;
+            
+            // If no content received for 15 seconds, consider increasing timeout counter
+            if (timeSinceLastKeepalive > 15000) {
+                timeoutCounter++;
+                console.warn(`No data received for ${Math.floor(timeSinceLastKeepalive/1000)}s (timeout counter: ${timeoutCounter})`);
+                
+                // After 3 timeouts (45 seconds total), consider the stream dead
+                if (timeoutCounter >= 3) {
+                    console.error("Stream appears to be dead, proceeding with what we have or showing an error");
+                    clearInterval(healthCheckInterval);
+                    
+                    // If we have content, use it
+                    if (htmlBuffer) {
+                        console.log(`Using partial content (${htmlBuffer.length} chars) despite stream failure`);
+                        
+                        // This will be processed later in the catch block
+                        reader.cancel().catch(e => console.error("Error canceling reader:", e));
+                    }
+                }
+            }
+        }, 5000);
         
         // Process stream chunks
-        while (true) {
-            const { done, value } = await reader.read();
-            
-            // Consider the stream complete if we're done or if we haven't received data in 10 seconds
-            const currentTime = Date.now();
-            const timeoutExceeded = currentTime - lastProcessedTime > 10000; // 10 seconds
-            
-            if (done || timeoutExceeded) {
-                if (timeoutExceeded && !isCompletionSeen) {
-                    console.log('Stream timed out, but we have content - proceeding with what we have');
-                    
-                    // Update with what we have so far
-                    if (htmlBuffer) {
-                        generatedContent = htmlBuffer;
-                        state.generatedHtml = generatedContent;
-                    }
-                }
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
                 
-                console.log('Stream complete');
-                break;
-            }
-            
-            // Reset timeout tracker
-            lastProcessedTime = currentTime;
-            
-            // Decode the chunk
-            const chunk = decoder.decode(value, { stream: true });
-            
-            // Process each line in the chunk
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-                if (!line.trim() || !line.startsWith('data: ')) continue;
+                // Consider the stream complete if we're done or if we haven't received data in 20 seconds (increased from 15)
+                const currentTime = Date.now();
+                const timeoutExceeded = currentTime - lastProcessedTime > 20000; // 20 seconds
                 
-                try {
-                    // Extract the JSON data
-                    const eventData = JSON.parse(line.substring(6));
-                    
-                    // Handle different event types
-                    if (eventData.type === 'content_block_delta') {
-                        // Add the text to our buffer
-                        const text = eventData.delta?.text || '';
-                        htmlBuffer += text;
-                        generatedContent += text;
+                if (done || timeoutExceeded) {
+                    if (timeoutExceeded && !isCompletionSeen) {
+                        console.log('Stream timed out, but we have content - proceeding with what we have');
                         
-                        // Update the UI with the HTML received so far
-                        updateHtmlDisplay(htmlBuffer);
-                        
-                        // Save to state immediately so it's available
-                        state.generatedHtml = generatedContent;
-                        
-                        // Update processing text
-                        setProcessingText(`Gemini is generating your visualization... (${formatFileSize(htmlBuffer.length)} generated)`);
-                    } else if (eventData.type === 'message_complete') {
-                        isCompletionSeen = true;
-                        // Update usage statistics if available
-                        if (eventData.usage) {
-                            console.log('Received usage statistics:', eventData.usage);
-                            updateUsageStatistics(eventData.usage);
-                        }
-                    } else if (eventData.type === 'error') {
-                        // If we have a deadline exceeded error but already have content
-                        if (eventData.error && eventData.error.includes('Deadline Exceeded') && htmlBuffer) {
-                            console.warn('Deadline exceeded but content received - continuing with what we have');
-                            // Don't throw an error, just log it and continue
-                        } else {
-                            throw new Error(eventData.error || 'Unknown streaming error');
+                        // Update with what we have so far
+                        if (htmlBuffer) {
+                            generatedContent = htmlBuffer;
+                            state.generatedHtml = generatedContent;
                         }
                     }
-                } catch (parseError) {
-                    console.error('Error parsing stream event:', parseError, line);
+                    
+                    console.log('Stream complete or timed out');
+                    break;
+                }
+                
+                // Reset timeout tracker
+                lastProcessedTime = currentTime;
+                timeoutCounter = 0; // Reset timeout counter since we got data
+                lastKeepAliveTime = currentTime;
+                
+                // Decode the chunk
+                const chunk = decoder.decode(value, { stream: true });
+                
+                // Process each line in the chunk
+                const lines = chunk.split('\n');
+                for (const line of lines) {
+                    if (!line.trim() || !line.startsWith('data: ')) continue;
+                    
+                    try {
+                        // Extract the JSON data
+                        const eventData = JSON.parse(line.substring(6));
+                        
+                        // Handle different event types
+                        if (eventData.type === 'content_block_delta') {
+                            // Add the text to our buffer
+                            const text = eventData.delta?.text || '';
+                            
+                            if (text) {
+                                htmlBuffer += text;
+                                generatedContent += text;
+                                hasReceivedContent = true;
+                            
+                                // Update the UI with the HTML received so far
+                                updateHtmlDisplay(htmlBuffer);
+                            
+                                // Save to state immediately so it's available
+                                state.generatedHtml = generatedContent;
+                            
+                                // Update processing text
+                                setProcessingText(`Gemini is generating your visualization... (${formatFileSize(htmlBuffer.length)} generated)`);
+                            }
+                        } else if (eventData.type === 'message_complete') {
+                            isCompletionSeen = true;
+                            // Update usage statistics if available
+                            if (eventData.usage) {
+                                console.log('Received usage statistics:', eventData.usage);
+                                updateUsageStatistics(eventData.usage);
+                            }
+                            
+                            // If the completion has HTML content, use it
+                            if (eventData.html && eventData.html.trim()) {
+                                console.log('Using complete HTML from completion event');
+                                // Use the complete HTML from the event, which might have better formatting
+                                generatedContent = eventData.html;
+                                state.generatedHtml = generatedContent;
+                                updateHtmlDisplay(generatedContent);
+                            }
+                        } else if (eventData.type === 'keepalive') {
+                            // Track keepalives for debugging
+                            keepaliveCounter++;
+                            lastKeepAliveTime = currentTime;
+                            console.log(`Received keepalive ${keepaliveCounter}, content length: ${htmlBuffer.length}`);
+                        } else if (eventData.type === 'error') {
+                            // If we have a deadline exceeded error but already have content
+                            if (eventData.error && (eventData.error.includes('Deadline Exceeded') || 
+                                                  eventData.error.includes('timeout') || 
+                                                  eventData.error.includes('timed out')) && htmlBuffer) {
+                                console.warn('Deadline exceeded but content received - continuing with what we have');
+                                // Don't throw an error, just log it and continue
+                            } else if (hasReceivedContent) {
+                                // If we have content, log the error but continue
+                                console.warn(`Error during streaming but we have content: ${eventData.error}`);
+                            } else {
+                                throw new Error(eventData.error || 'Unknown streaming error');
+                            }
+                        }
+                    } catch (parseError) {
+                        console.error('Error parsing stream event:', parseError, line);
+                    }
                 }
             }
+        } finally {
+            // Clean up the health check
+            clearInterval(healthCheckInterval);
+        }
+        
+        // Measure total time
+        const totalTime = (Date.now() - streamStartTime) / 1000;
+        console.log(`Gemini stream processing completed in ${totalTime.toFixed(1)} seconds`);
+        
+        // If we didn't receive any content, throw a specific error
+        if (!hasReceivedContent || !generatedContent.trim()) {
+            throw new Error('No content received from Gemini API. Please try again or check your API key.');
         }
         
         // Ensure the generated content is saved to state
@@ -1214,7 +1369,16 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         setProcessingText('Generation complete!');
         state.processing = false;
         stopElapsedTimeCounter();
-        stopProcessingAnimation();
+        
+        // Check if stopProcessingAnimation accepts a parameter (some versions may not)
+        if (typeof stopProcessingAnimation === 'function') {
+            if (stopProcessingAnimation.length > 0) {
+                stopProcessingAnimation(true); // true indicates success
+            } else {
+                stopProcessingAnimation(); // older version without success parameter
+            }
+        }
+        
         disableInputsDuringGeneration(false);
         
         // Show completion toast
@@ -1222,9 +1386,11 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         
         return generatedContent;
     } catch (error) {
+        console.error('Error in Gemini streaming:', error);
+        
         // Check if we received any content before the error
-        if (generatedContent) {
-            console.warn('Error occurred but some content was received:', error);
+        if (generatedContent && generatedContent.trim().length > 100) { // Increased minimum content length
+            console.warn('Error occurred but significant content was received. Content length:', generatedContent.length);
             console.log('Continuing with partial content...');
             
             // Final UI updates with the partial content we have
@@ -1235,7 +1401,16 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
             setProcessingText('Generation complete (with partial content)!');
             state.processing = false;
             stopElapsedTimeCounter();
-            stopProcessingAnimation();
+            
+            // Check if stopProcessingAnimation accepts a parameter
+            if (typeof stopProcessingAnimation === 'function') {
+                if (stopProcessingAnimation.length > 0) {
+                    stopProcessingAnimation(true); // Still consider it a success
+                } else {
+                    stopProcessingAnimation();
+                }
+            }
+            
             disableInputsDuringGeneration(false);
             
             // Show partial success toast
@@ -1243,7 +1418,46 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
             
             return generatedContent;
         } else {
-            console.error('Gemini streaming error with no content:', error);
+            console.error('Gemini streaming error with no usable content:', error);
+            
+            // Complete generation but indicate failure
+            setProcessingText('Generation failed!');
+            state.processing = false;
+            stopElapsedTimeCounter();
+            
+            // Check if stopProcessingAnimation accepts a parameter
+            if (typeof stopProcessingAnimation === 'function') {
+                if (stopProcessingAnimation.length > 0) {
+                    stopProcessingAnimation(false); // false indicates failure
+                } else {
+                    stopProcessingAnimation();
+                }
+            }
+            
+            disableInputsDuringGeneration(false);
+            
+            // Show error toast
+            showToast(`Generation failed: ${error.message}`, 'error');
+            
+            // Try a fallback to non-streaming mode if this was a specific type of error
+            if (error.message.includes('No content received') || 
+                error.message.includes('timeout') || 
+                error.message.includes('stream') ||
+                error.message.includes('EOF')) {
+                console.log('Attempting fallback to non-streaming mode...');
+                showToast('Trying fallback non-streaming mode...', 'info');
+                
+                try {
+                    const fallbackContent = await generateGeminiHTML(apiKey, source, formatPrompt, maxTokens, temperature);
+                    if (fallbackContent && fallbackContent.trim()) {
+                        console.log('Fallback generation successful');
+                        return fallbackContent;
+                    }
+                } catch (fallbackError) {
+                    console.error('Fallback generation also failed:', fallbackError);
+                }
+            }
+            
             throw error;
         }
     }
@@ -1912,10 +2126,22 @@ function showResultSection() {
 }
 
 function startElapsedTimeCounter() {
-    clearInterval(state.elapsedTimeInterval);
+    // Clear any existing interval
+    if (state.elapsedTimeInterval) {
+        clearInterval(state.elapsedTimeInterval);
+    }
     
     // Initialize the start time properly
     state.startTime = new Date();
+    
+    // Ensure the elapsed time element exists
+    if (!elements.elapsedTime) {
+        console.error('Elapsed time element not found');
+        return;
+    }
+    
+    // Make sure the elapsed time element is visible
+    elements.elapsedTime.classList.remove('hidden');
     
     // Update the counter immediately once
     const elapsed = Math.floor((new Date() - state.startTime) / 1000);
@@ -1923,9 +2149,16 @@ function startElapsedTimeCounter() {
     
     // Then set up the interval for subsequent updates
     state.elapsedTimeInterval = setInterval(() => {
-        const elapsed = Math.floor((new Date() - state.startTime) / 1000);
-        elements.elapsedTime.textContent = `Elapsed: ${formatTime(elapsed)}`;
+        try {
+            const elapsed = Math.floor((new Date() - state.startTime) / 1000);
+            elements.elapsedTime.textContent = `Elapsed: ${formatTime(elapsed)}`;
+        } catch (error) {
+            console.error('Error updating elapsed time:', error);
+            clearInterval(state.elapsedTimeInterval);
+        }
     }, 1000);
+    
+    console.log('Started elapsed time counter');
 }
 
 function stopElapsedTimeCounter() {
@@ -1933,8 +2166,14 @@ function stopElapsedTimeCounter() {
 }
 
 function displayElapsedTime(seconds) {
-    if (seconds && elements.elapsedTime) {
-        elements.elapsedTime.textContent = `Completed in: ${formatTime(seconds)}`;
+    if (elements.elapsedTime) {
+        if (seconds && !isNaN(seconds)) {
+            elements.elapsedTime.textContent = `Completed in: ${formatTime(seconds)}`;
+            console.log(`Generation completed in ${seconds} seconds`);
+        } else {
+            // Fallback if seconds is invalid
+            elements.elapsedTime.textContent = 'Completed';
+        }
     }
 }
 
@@ -2116,21 +2355,30 @@ function updateHtmlDisplay(directContent) {
 // Add function to suppress TailwindCSS CDN warnings in iframes
 function suppressTailwindCDNWarnings(iframeDoc) {
     try {
+        // Check if script already exists to prevent duplicate declarations
+        const existingScript = iframeDoc.querySelector('script[data-purpose="suppress-tailwind-warnings"]');
+        if (existingScript) {
+            return; // Already added, don't add duplicate
+        }
+        
         // Add script to suppress warnings in the iframe head
         const suppressScript = iframeDoc.createElement('script');
+        suppressScript.setAttribute('data-purpose', 'suppress-tailwind-warnings');
         suppressScript.textContent = `
             // Capture and suppress Tailwind CDN warnings
-            const originalConsoleWarn = console.warn;
-            console.warn = function(...args) {
-                // Filter out tailwind CDN warnings
-                if (args.length > 0 && typeof args[0] === 'string' && 
-                    args[0].includes('cdn.tailwindcss.com should not be used in production')) {
-                    // Suppress this specific warning
-                    return;
-                }
-                // Pass through all other warnings
-                originalConsoleWarn.apply(console, args);
-            };
+            if (typeof window.__originalConsoleWarn === 'undefined') {
+                window.__originalConsoleWarn = console.warn;
+                console.warn = function(...args) {
+                    // Filter out tailwind CDN warnings
+                    if (args.length > 0 && typeof args[0] === 'string' && 
+                        args[0].includes('cdn.tailwindcss.com should not be used in production')) {
+                        // Suppress this specific warning
+                        return;
+                    }
+                    // Pass through all other warnings
+                    window.__originalConsoleWarn.apply(console, args);
+                };
+            }
         `;
         iframeDoc.head.appendChild(suppressScript);
     } catch (error) {
@@ -2181,18 +2429,66 @@ function updatePreview(directContent) {
         modifiedContent = modifiedContent.replace(/const\s+(\w+)\s*=/g, `const $1_${previewId} =`);
         modifiedContent = modifiedContent.replace(/let\s+(\w+)\s*=/g, `let $1_${previewId} =`);
         modifiedContent = modifiedContent.replace(/var\s+(\w+)\s*=/g, `var $1_${previewId} =`);
-        modifiedContent = modifiedContent.replace(/function\s+(\w+)\s*\(/g, `function $1_${previewId}(`);
+        
+        // Handle function definitions - keep track of functions we rename
+        const renamedFunctions = new Set();
+        modifiedContent = modifiedContent.replace(/function\s+(\w+)\s*\(/g, (match, name) => {
+            renamedFunctions.add(name);
+            return `function ${name}_${previewId}(`;
+        });
         
         // Replace common variables that often cause conflicts
         modifiedContent = modifiedContent.replace(/prefersDark/g, `prefersDark_${previewId}`);
-        modifiedContent = modifiedContent.replace(/applyTheme/g, `applyTheme_${previewId}`);
+        
+        // Special handling for ThemeManager
+        modifiedContent = modifiedContent.replace(/ThemeManager/g, `ThemeManager_${previewId}`);
+        
+        // Special handling for applyTheme function
+        const applyThemeRegex = /function\s+applyTheme\s*\(/g;
+        if (applyThemeRegex.test(modifiedContent)) {
+            renamedFunctions.add('applyTheme');
+            modifiedContent = modifiedContent.replace(/applyTheme/g, `applyTheme_${previewId}`);
+        }
+        
         modifiedContent = modifiedContent.replace(/toggleDarkMode/g, `toggleDarkMode_${previewId}`);
+        
+        // Now update all function calls for renamed functions
+        renamedFunctions.forEach(funcName => {
+            // Use word boundary to ensure we only replace function calls, not partial matches
+            const callRegex = new RegExp(`\\b${funcName}\\(`, 'g');
+            modifiedContent = modifiedContent.replace(callRegex, `${funcName}_${previewId}(`);
+        });
         
         // Add a comment to Tailwind CDN imports about production usage
         modifiedContent = modifiedContent.replace(
             /(https:\/\/cdn\.tailwindcss\.com[^"']*)/g, 
             '$1" data-info="Please note: For production use, it\'s recommended to install Tailwind CSS as a PostCSS plugin or use the Tailwind CLI'
         );
+        
+        // Add generic protection against common errors
+        const safetyScript = `
+        <script>
+            // Define any potentially missing globals to prevent errors
+            if (typeof ThemeManager_${previewId} === 'undefined') {
+                window.ThemeManager_${previewId} = { init: function() { console.log('ThemeManager stub'); } };
+            }
+            
+            // Catch and log any errors
+            window.addEventListener('error', function(e) {
+                console.log('Preview iframe error:', e.message);
+                return false;
+            });
+        </script>
+        `;
+        
+        // Add the safety script to the content
+        if (modifiedContent.includes('</head>')) {
+            modifiedContent = modifiedContent.replace('</head>', `${safetyScript}</head>`);
+        } else if (modifiedContent.includes('<body')) {
+            modifiedContent = modifiedContent.replace('<body', `${safetyScript}<body`);
+        } else {
+            modifiedContent = `${safetyScript}${modifiedContent}`;
+        }
         
         // Write the HTML to the iframe
         const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -2216,6 +2512,21 @@ function resetGenerationUI(success = false) {
         updateGenerateButtonState();
     }
     
+    // Calculate and display total elapsed time
+    if (state.startTime && elements.elapsedTime) {
+        const totalSeconds = Math.floor((new Date() - state.startTime) / 1000);
+        
+        if (success) {
+            displayElapsedTime(totalSeconds);
+        } else {
+            // Even on error, show how long it took
+            elements.elapsedTime.textContent = `Failed after: ${formatTime(totalSeconds)}`;
+        }
+    }
+    
+    // Stop the elapsed time counter
+    stopElapsedTimeCounter();
+    
     if (elements.processingStatus) {
         if (success) {
             // Change the processing status to show completion but keep it visible
@@ -2229,8 +2540,6 @@ function resetGenerationUI(success = false) {
             }
             // Keep it visible permanently
             elements.processingStatus.classList.remove('hidden');
-            // Only stop the time counter on successful completion
-            stopElapsedTimeCounter();
         } else {
             // On error, update status but keep visible
             if (elements.processingText) {
@@ -2242,8 +2551,6 @@ function resetGenerationUI(success = false) {
                 elements.processingIcon.style.color = "#EF4444"; // Red color
             }
             elements.processingStatus.classList.remove('hidden');
-            // Stop the timer also on error
-            stopElapsedTimeCounter();
         }
     }
     
