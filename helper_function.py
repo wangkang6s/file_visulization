@@ -94,6 +94,7 @@ class GeminiStreamingResponse:
         self.total_content = ""
         self.is_complete = False
         self.last_chunk_time = time.time()
+        self.timeout_seconds = 20  # Consider a stream timed out after 20 seconds of inactivity
         
     def __enter__(self):
         return self
@@ -104,7 +105,8 @@ class GeminiStreamingResponse:
     def __iter__(self):
         # Process the streaming response
         try:
-            for chunk in self.stream_response:
+            # Create a wrapper for the stream that handles timeouts
+            for chunk in self._iterate_with_timeout():
                 self.chunk_count += 1
                 self.last_chunk_time = time.time()
                 
@@ -162,18 +164,65 @@ class GeminiStreamingResponse:
             yield f"data: {json.dumps({'type': 'stream_end', 'message': 'Stream complete', 'session_id': self.session_id})}\n\n"
             
         except Exception as e:
-            # Handle any errors that occur during streaming
             error_message = str(e)
-            print(f"Streaming error: {error_message}")
+            error_details = traceback.format_exc()
             
-            error_event = {
-                "type": "error",
-                "error": error_message,
-                "details": traceback.format_exc(),
-                "session_id": self.session_id
-            }
-            
-            yield f"data: {json.dumps(error_event)}\n\n"
+            # Check if it's a deadline exceeded error and we have content
+            if "deadline exceeded" in error_message.lower() and self.total_content:
+                print(f"Deadline exceeded error, but we have content. Sending partial completion.")
+                
+                # Calculate token usage for the partial content
+                input_tokens = max(1, len(self.stream_response.prompt) // 3 if hasattr(self.stream_response, 'prompt') else 0)
+                output_tokens = max(1, len(self.total_content) // 3)
+                
+                # Send partial completion event
+                partial_event = {
+                    "type": "message_complete",
+                    "message_id": f"msg_{self.session_id}",
+                    "chunk_id": f"{self.session_id}_{self.chunk_count}",
+                    "html": self.total_content,
+                    "session_id": self.session_id,
+                    "final_chunk_count": self.chunk_count,
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                        "total_cost": 0.0
+                    },
+                    "warning": "Partial response due to timeout"
+                }
+                
+                yield f"data: {json.dumps(partial_event)}\n\n"
+                yield f"data: {json.dumps({'type': 'stream_end', 'message': 'Stream partially complete (timeout)', 'session_id': self.session_id})}\n\n"
+            else:
+                # Handle any other errors that occur during streaming
+                print(f"Streaming error: {error_message}")
+                
+                error_event = {
+                    "type": "error",
+                    "error": error_message,
+                    "details": error_details,
+                    "session_id": self.session_id
+                }
+                
+                yield f"data: {json.dumps(error_event)}\n\n"
+                
+    def _iterate_with_timeout(self):
+        """Iterator wrapper that handles timeouts gracefully."""
+        try:
+            for chunk in self.stream_response:
+                yield chunk
+                self.last_chunk_time = time.time()
+        except Exception as e:
+            # If we have a deadline exceeded but we've received content, we'll return what we have
+            if ("deadline exceeded" in str(e).lower() or 
+                "timeout" in str(e).lower()) and self.total_content:
+                print(f"Stream timed out with content: {len(self.total_content)} chars")
+                # We're done, return from the generator
+                return
+            else:
+                # For other errors, re-raise
+                raise
 
 # Special client class for Vercel that doesn't use the standard Anthropic library
 class VercelCompatibleClient:

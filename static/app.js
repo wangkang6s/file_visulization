@@ -1109,15 +1109,34 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         const reader = response.body.getReader();
         let decoder = new TextDecoder();
         let htmlBuffer = '';
+        let lastProcessedTime = Date.now();
+        let isCompletionSeen = false;
         
         // Process stream chunks
         while (true) {
             const { done, value } = await reader.read();
             
-            if (done) {
+            // Consider the stream complete if we're done or if we haven't received data in 10 seconds
+            const currentTime = Date.now();
+            const timeoutExceeded = currentTime - lastProcessedTime > 10000; // 10 seconds
+            
+            if (done || timeoutExceeded) {
+                if (timeoutExceeded && !isCompletionSeen) {
+                    console.log('Stream timed out, but we have content - proceeding with what we have');
+                    
+                    // Update with what we have so far
+                    if (htmlBuffer) {
+                        generatedContent = htmlBuffer;
+                        state.generatedHtml = generatedContent;
+                    }
+                }
+                
                 console.log('Stream complete');
                 break;
             }
+            
+            // Reset timeout tracker
+            lastProcessedTime = currentTime;
             
             // Decode the chunk
             const chunk = decoder.decode(value, { stream: true });
@@ -1147,13 +1166,20 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
                         // Update processing text
                         setProcessingText(`Gemini is generating your visualization... (${formatFileSize(htmlBuffer.length)} generated)`);
                     } else if (eventData.type === 'message_complete') {
+                        isCompletionSeen = true;
                         // Update usage statistics if available
                         if (eventData.usage) {
                             console.log('Received usage statistics:', eventData.usage);
                             updateUsageStatistics(eventData.usage);
                         }
                     } else if (eventData.type === 'error') {
-                        throw new Error(eventData.error || 'Unknown streaming error');
+                        // If we have a deadline exceeded error but already have content
+                        if (eventData.error && eventData.error.includes('Deadline Exceeded') && htmlBuffer) {
+                            console.warn('Deadline exceeded but content received - continuing with what we have');
+                            // Don't throw an error, just log it and continue
+                        } else {
+                            throw new Error(eventData.error || 'Unknown streaming error');
+                        }
                     }
                 } catch (parseError) {
                     console.error('Error parsing stream event:', parseError, line);
@@ -1196,8 +1222,30 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         
         return generatedContent;
     } catch (error) {
-        console.error('Gemini streaming error:', error);
-        throw error;
+        // Check if we received any content before the error
+        if (generatedContent) {
+            console.warn('Error occurred but some content was received:', error);
+            console.log('Continuing with partial content...');
+            
+            // Final UI updates with the partial content we have
+            updateHtmlDisplay(generatedContent);
+            updatePreview(generatedContent); 
+            
+            // Complete generation
+            setProcessingText('Generation complete (with partial content)!');
+            state.processing = false;
+            stopElapsedTimeCounter();
+            stopProcessingAnimation();
+            disableInputsDuringGeneration(false);
+            
+            // Show partial success toast
+            showToast('Website generated with partial content due to timeout', 'warning');
+            
+            return generatedContent;
+        } else {
+            console.error('Gemini streaming error with no content:', error);
+            throw error;
+        }
     }
 }
 
@@ -2065,6 +2113,31 @@ function updateHtmlDisplay(directContent) {
     console.log(`updateHtmlDisplay called with content length: ${htmlContent.length}`);
 }
 
+// Add function to suppress TailwindCSS CDN warnings in iframes
+function suppressTailwindCDNWarnings(iframeDoc) {
+    try {
+        // Add script to suppress warnings in the iframe head
+        const suppressScript = iframeDoc.createElement('script');
+        suppressScript.textContent = `
+            // Capture and suppress Tailwind CDN warnings
+            const originalConsoleWarn = console.warn;
+            console.warn = function(...args) {
+                // Filter out tailwind CDN warnings
+                if (args.length > 0 && typeof args[0] === 'string' && 
+                    args[0].includes('cdn.tailwindcss.com should not be used in production')) {
+                    // Suppress this specific warning
+                    return;
+                }
+                // Pass through all other warnings
+                originalConsoleWarn.apply(console, args);
+            };
+        `;
+        iframeDoc.head.appendChild(suppressScript);
+    } catch (error) {
+        console.error("Error suppressing Tailwind warnings:", error);
+    }
+}
+
 function updatePreview(directContent) {
     // Use the provided content or get from state
     const htmlContent = directContent || state.generatedHtml || '';
@@ -2098,13 +2171,39 @@ function updatePreview(directContent) {
             }
         }
         
+        // Modify script declarations to prevent duplicate variable errors
+        // Add a unique namespace for each preview to avoid conflicts
+        const previewId = `preview_${Date.now()}`;
+        let modifiedContent = cleanedContent;
+        
+        // Find and modify variable declarations and function definitions
+        // Add scope to prevent variable declaration conflicts
+        modifiedContent = modifiedContent.replace(/const\s+(\w+)\s*=/g, `const $1_${previewId} =`);
+        modifiedContent = modifiedContent.replace(/let\s+(\w+)\s*=/g, `let $1_${previewId} =`);
+        modifiedContent = modifiedContent.replace(/var\s+(\w+)\s*=/g, `var $1_${previewId} =`);
+        modifiedContent = modifiedContent.replace(/function\s+(\w+)\s*\(/g, `function $1_${previewId}(`);
+        
+        // Replace common variables that often cause conflicts
+        modifiedContent = modifiedContent.replace(/prefersDark/g, `prefersDark_${previewId}`);
+        modifiedContent = modifiedContent.replace(/applyTheme/g, `applyTheme_${previewId}`);
+        modifiedContent = modifiedContent.replace(/toggleDarkMode/g, `toggleDarkMode_${previewId}`);
+        
+        // Add a comment to Tailwind CDN imports about production usage
+        modifiedContent = modifiedContent.replace(
+            /(https:\/\/cdn\.tailwindcss\.com[^"']*)/g, 
+            '$1" data-info="Please note: For production use, it\'s recommended to install Tailwind CSS as a PostCSS plugin or use the Tailwind CLI'
+        );
+        
         // Write the HTML to the iframe
         const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
         iframeDoc.open();
-        iframeDoc.write(cleanedContent);
+        iframeDoc.write(modifiedContent);
         iframeDoc.close();
         
-        console.log('Preview updated with HTML content of length:', cleanedContent.length);
+        // Suppress Tailwind CDN warnings in the iframe
+        suppressTailwindCDNWarnings(iframeDoc);
+        
+        console.log('Preview updated with HTML content of length:', modifiedContent.length);
     } catch (error) {
         console.error('Error updating preview:', error);
     }
