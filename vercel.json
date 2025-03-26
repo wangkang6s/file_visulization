@@ -3,7 +3,12 @@
   "builds": [
     {
       "src": "server.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "runtime": "python3.9",
+        "maxDuration": 60,
+        "memory": 1024
+      }
     },
     {
       "src": "static/**",
@@ -31,5 +36,18 @@
       "dest": "/server.py"
     }
   ],
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "functions": {
+    "api/*.py": {
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "server.py": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
   "buildCommand": "chmod +x build_files.sh && ./build_files.sh"
 } 

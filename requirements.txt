@@ -8,3 +8,4 @@ google-generativeai==0.3.1
 pdfminer.six
 pypdf2
 numpy
+pydantic==1.10.8
