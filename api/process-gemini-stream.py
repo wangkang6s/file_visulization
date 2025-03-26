@@ -143,103 +143,106 @@ Here is the content to transform into a website:
                 
                 print(f"Starting Gemini generation with config: {generation_config}")
                 
-                # Generate content 
+                # Generate content
                 try:
-                    # For Vercel, use non-streaming approach to avoid timeout issues
-                    print("Using non-streaming approach for Vercel function")
+                    # For Vercel, use a simplified non-streaming approach to avoid timeout issues
+                    print("Using simplified non-streaming approach for Vercel compatibility")
                     
+                    # Make a non-streaming request to the Gemini API
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=generation_config,
+                        stream=False  # Force non-streaming for Vercel
+                    )
+                    
+                    # Extract the content text directly
+                    content_text = ""
+                    
+                    # Try multiple methods to extract text from the response
                     try:
-                        # Set a shorter timeout for Vercel environment
-                        response = model.generate_content(
-                            prompt,
-                            generation_config=generation_config,
-                            stream=False  # Use non-streaming for Vercel to avoid timeouts
-                        )
-                        
-                        # Process non-streaming response
-                        print(f"Non-streaming response received")
-                        
-                        # Extract text safely
-                        content_text = ""
+                        if hasattr(response, 'text'):
+                            content_text = response.text
+                            print(f"Extracted text from 'text' attribute: {len(content_text)} chars")
+                        elif hasattr(response, 'parts') and response.parts:
+                            content_text = response.parts[0].text
+                            print(f"Extracted text from 'parts' attribute: {len(content_text)} chars")
+                        elif hasattr(response, 'candidates') and response.candidates:
+                            for candidate in response.candidates:
+                                if hasattr(candidate, 'content') and candidate.content:
+                                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                                        for part in candidate.content.parts:
+                                            if hasattr(part, 'text'):
+                                                content_text += part.text
+                            print(f"Extracted text from 'candidates' attribute: {len(content_text)} chars")
+                        else:
+                            # Last resort: convert the entire response to string
+                            content_text = str(response)
+                            print(f"Extracted text using string conversion: {len(content_text)} chars")
+                    except Exception as text_error:
+                        # If all attempts fail, try using the resolve method
+                        print(f"Error extracting text: {str(text_error)}")
                         try:
-                            if hasattr(response, 'text'):
-                                content_text = response.text
-                            elif hasattr(response, 'parts') and response.parts:
-                                content_text = response.parts[0].text
-                            else:
-                                content_text = str(response)
-                            
-                            print(f"Extracted content length: {len(content_text)}")
-                        except Exception as text_error:
-                            print(f"Error extracting text: {str(text_error)}")
                             if hasattr(response, 'resolve'):
-                                try:
-                                    resolved = response.resolve()
-                                    if hasattr(resolved, 'text'):
-                                        content_text = resolved.text
-                                    print(f"Resolved response text: {len(content_text)}")
-                                except Exception as resolve_error:
-                                    print(f"Error resolving response: {str(resolve_error)}")
-                        
-                        # Only continue if we have content
-                        if not content_text:
-                            raise ValueError("Failed to extract content from Gemini response")
-                        
-                        # First yield a stream start event
-                        yield format_stream_event("stream_start", {"message": "Stream starting", "session_id": session_id})
-                        
-                        # Then yield a content chunk
-                        yield format_stream_event("content", {
-                            "type": "content_block_delta",
-                            "delta": {"text": content_text},
-                            "session_id": session_id,
-                            "chunk_id": f"{session_id}_1"
-                        })
-                        
-                        # Then yield completion
-                        input_tokens = max(1, int(len(prompt.split()) * 1.3))
-                        output_tokens = max(1, int(len(content_text.split()) * 1.3))
-                        
-                        # Create a message_complete event
-                        yield format_stream_event("content", {
-                            "type": "message_complete",
-                            "chunk_id": f"{session_id}_final",
-                            "usage": {
-                                "input_tokens": input_tokens,
-                                "output_tokens": output_tokens,
-                                "total_tokens": input_tokens + output_tokens,
-                                "total_cost": 0.0
-                            },
-                            "html": content_text,
-                            "session_id": session_id
-                        })
-                        
-                        # Stream end event
-                        print("Gemini response processed successfully")
-                        yield format_stream_event("stream_end", {
-                            "message": "Stream complete",
-                            "session_id": session_id
-                        })
-                    except Exception as generate_error:
-                        error_detail = f"Failed to generate content: {str(generate_error)}"
-                        print(f"Error: {error_detail}")
-                        print(traceback.format_exc())
-                        
-                        yield format_stream_event("error", {
-                            "type": "error", 
-                            "error": "Generation failed",
-                            "details": error_detail,
-                            "session_id": session_id
-                        })
-                
+                                resolved = response.resolve()
+                                if hasattr(resolved, 'text'):
+                                    content_text = resolved.text
+                                    print(f"Extracted text through resolve: {len(content_text)} chars")
+                                elif hasattr(resolved, 'parts') and resolved.parts:
+                                    content_text = resolved.parts[0].text
+                                    print(f"Extracted text through resolve: {len(content_text)} chars")
+                        except Exception as resolve_error:
+                            print(f"Error resolving response: {str(resolve_error)}")
+                    
+                    # If we still don't have content, this is an error
+                    if not content_text:
+                        raise ValueError("Could not extract content from Gemini response")
+                    
+                    # Now simulate a stream in the format expected by the client
+                    # 1. Start stream event
+                    yield format_stream_event("stream_start", {"message": "Stream starting", "session_id": session_id})
+                    
+                    # 2. Send content delta (the full content at once)
+                    yield format_stream_event("content", {
+                        "type": "content_block_delta",
+                        "delta": {"text": content_text},
+                        "session_id": session_id,
+                        "chunk_id": f"{session_id}_1"
+                    })
+                    
+                    # 3. Send message complete event
+                    input_tokens = max(1, int(len(prompt.split()) * 1.3))
+                    output_tokens = max(1, int(len(content_text.split()) * 1.3))
+                    
+                    yield format_stream_event("content", {
+                        "type": "message_complete",
+                        "chunk_id": f"{session_id}_complete",
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "total_cost": 0.0
+                        },
+                        "html": content_text,
+                        "session_id": session_id
+                    })
+                    
+                    # 4. Send stream end event
+                    yield format_stream_event("stream_end", {
+                        "message": "Stream complete",
+                        "session_id": session_id
+                    })
+                    
+                    print(f"Successfully processed Gemini response with {len(content_text)} chars")
+
                 except Exception as e:
                     error_message = str(e)
-                    print(f"Unexpected error in gemini_stream_generator: {error_message}")
+                    print(f"Error in Gemini processing: {error_message}")
                     print(traceback.format_exc())
                     
+                    # Send error event to client
                     yield format_stream_event("error", {
                         "type": "error",
-                        "error": error_message,
+                        "error": f"Gemini API error: {error_message}",
                         "details": traceback.format_exc(),
                         "session_id": session_id
                     })

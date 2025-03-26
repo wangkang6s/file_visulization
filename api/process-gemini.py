@@ -97,49 +97,83 @@ Here is the content to transform into a website:
 """
         
         # Generate content
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
+        try:
+            print("Generating content with Gemini (non-streaming)")
+            response = model.generate_content(
+                prompt,
+                generation_config=generation_config
+            )
+            
+            # Extract the HTML from the response using multiple methods
+            html_content = ""
+            
+            try:
+                # Try standard text attribute first
+                if hasattr(response, 'text'):
+                    html_content = response.text
+                    print(f"Extracted content from text attribute: {len(html_content)} chars")
+                # Then try parts
+                elif hasattr(response, 'parts') and response.parts:
+                    for part in response.parts:
+                        if hasattr(part, 'text'):
+                            html_content += part.text
+                    print(f"Extracted content from parts: {len(html_content)} chars")
+                # Then check candidates
+                elif hasattr(response, 'candidates') and response.candidates:
+                    for candidate in response.candidates:
+                        if hasattr(candidate, 'content') and candidate.content:
+                            if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                                for part in candidate.content.parts:
+                                    if hasattr(part, 'text'):
+                                        html_content += part.text
+                    print(f"Extracted content from candidates: {len(html_content)} chars")
+                else:
+                    # Last resort: try string conversion
+                    html_content = str(response)
+                    print(f"Extracted content using string conversion: {len(html_content)} chars")
+            except Exception as extract_error:
+                print(f"Error extracting content: {str(extract_error)}")
+                # Try the resolve method as a fallback
+                try:
+                    if hasattr(response, 'resolve'):
+                        resolved = response.resolve()
+                        if hasattr(resolved, 'text'):
+                            html_content = resolved.text
+                            print(f"Extracted content through resolve: {len(html_content)} chars")
+                except Exception as resolve_error:
+                    print(f"Error resolving response: {str(resolve_error)}")
+            
+            # If we still don't have content, this is an error
+            if not html_content:
+                raise ValueError("Could not extract content from Gemini response")
+            
+            # Get usage stats (approximate since Gemini doesn't provide exact token counts)
+            input_tokens = max(1, int(len(prompt.split()) * 1.3))
+            output_tokens = max(1, int(len(html_content.split()) * 1.3))
+            
+            # Log response
+            print(f"Successfully generated HTML with Gemini. Input tokens: {input_tokens}, Output tokens: {output_tokens}")
+            
+            # Return the response
+            return jsonify({
+                'html': html_content,
+                'model': GEMINI_MODEL,
+                'usage': {
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'total_tokens': input_tokens + output_tokens,
+                    'total_cost': 0.0  # Gemini API is currently free
+                }
+            })
         
-        # Extract the HTML from the response
-        html_content = ""
-        if hasattr(response, 'text'):
-            html_content = response.text
-        else:
-            # Try to access response parts if available
-            if hasattr(response, 'parts') and response.parts:
-                html_content = response.parts[0].text
-        
-        # If we still don't have content, use string representation
-        if not html_content:
-            html_content = str(response)
-        
-        # Get usage stats (approximate since Gemini doesn't provide exact token counts)
-        input_tokens = len(prompt.split()) * 1.3  # Rough estimate: ~1.3 tokens per word
-        output_tokens = len(html_content.split()) * 1.3
-        
-        # Ensure we don't have zero tokens (minimum of source length / 3)
-        input_tokens = max(len(content.split()) * 1.3, input_tokens)
-        
-        # Round to integers
-        input_tokens = max(1, int(input_tokens))
-        output_tokens = max(1, int(output_tokens))
-        
-        # Log response
-        print(f"Successfully generated HTML with Gemini. Input tokens: {input_tokens}, Output tokens: {output_tokens}")
-        
-        # Return the response
-        return jsonify({
-            'html': html_content,
-            'model': GEMINI_MODEL,
-            'usage': {
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens,
-                'total_tokens': input_tokens + output_tokens,
-                'total_cost': 0.0  # Gemini API is currently free
-            }
-        })
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error in /api/process-gemini: {error_message}")
+            print(traceback.format_exc())
+            return jsonify({
+                'error': f'Server error: {error_message}',
+                'details': traceback.format_exc()
+            }), 500
     
     except Exception as e:
         error_message = str(e)
