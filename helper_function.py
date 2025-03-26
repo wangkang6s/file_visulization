@@ -6,7 +6,6 @@ import requests
 import time
 import uuid
 import base64
-import traceback
 
 # Import Google Generative AI package
 try:
@@ -49,50 +48,131 @@ def create_anthropic_client(api_key):
             print(f"Custom client also failed: {str(e2)}")
             raise Exception(f"Failed to create Anthropic client: {str(e)}")
 
-def create_gemini_client(api_key=None):
-    """
-    Creates and returns a Google GenerativeAI client with the provided API key.
+def create_gemini_client(api_key):
+    """Create a Google Gemini client with the given API key."""
+    if not GEMINI_AVAILABLE:
+        raise ImportError("Google Generative AI package is not installed. Please install it with 'pip install google-generativeai'.")
     
-    Args:
-        api_key (str, optional): The API key for Gemini. If None, tries to use environment variable.
-        
-    Returns:
-        Client: The Google GenerativeAI client
-        
-    Raises:
-        ValueError: If no API key is provided or found in environment variables.
-    """
+    print(f"Creating Google Gemini client with API key: {api_key[:8]}...")
+    
+    # Check if API key is valid format
+    if not api_key or not api_key.strip():
+        raise ValueError("API key cannot be empty")
+    
     try:
-        from google import genai
+        # Configure the Gemini client
+        genai.configure(api_key=api_key)
         
-        # Use provided API key or try to get from environment
-        if not api_key:
-            api_key = os.environ.get('GEMINI_API_KEY')
+        # Create a simple wrapper class that provides the methods expected by the server
+        class GeminiClient:
+            def __init__(self):
+                pass
+                
+            def get_model(self, model_name):
+                """Create and return a GenerativeModel instance for the specified model."""
+                try:
+                    return genai.GenerativeModel(model_name)
+                except Exception as e:
+                    print(f"Error creating model {model_name}: {str(e)}")
+                    raise
         
-        if not api_key:
-            raise ValueError("No API key provided for Gemini. Please provide an API key.")
-        
-        # Configure the client with the new Client-based approach
-        client = genai.Client(api_key=api_key)
-        return client
-    except ImportError:
-        raise ImportError("Google Generative AI package not installed. Install with 'pip install google-generativeai'")
+        # Create and return the client wrapper
+        return GeminiClient()
+            
     except Exception as e:
-        raise ValueError(f"Failed to create Gemini client: {str(e)}")
+        print(f"Gemini client creation failed: {str(e)}")
+        raise Exception(f"Failed to create Google Gemini client: {str(e)}")
 
-def format_stream_event(event_type, data):
-    """
-    Formats a Server-Sent Event (SSE) message for streaming.
-    
-    Args:
-        event_type (str): The type of event (e.g., 'content', 'error')
-        data (dict): The data to include in the event
+class GeminiStreamingResponse:
+    """Class to handle streaming responses from Google Gemini API"""
+    def __init__(self, stream_response, session_id=None):
+        self.stream_response = stream_response
+        self.session_id = session_id or str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
+        self.buffer = []
+        self.chunk_count = 0
+        self.total_content = ""
+        self.is_complete = False
+        self.last_chunk_time = time.time()
         
-    Returns:
-        str: A formatted SSE message
-    """
-    message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-    return message
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+        
+    def __iter__(self):
+        # Process the streaming response
+        try:
+            for chunk in self.stream_response:
+                self.chunk_count += 1
+                self.last_chunk_time = time.time()
+                
+                if hasattr(chunk, 'text') and chunk.text:
+                    self.total_content += chunk.text
+                    
+                    # Create a formatted response chunk
+                    content_chunk = {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "text_delta",
+                            "text": chunk.text
+                        }
+                    }
+                    
+                    yield f"data: {json.dumps(content_chunk)}\n\n"
+                    
+                    # Every 10 chunks, send a keepalive
+                    if self.chunk_count % 10 == 0:
+                        yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+                
+            # Completion has finished
+            self.is_complete = True
+            
+            # Calculate token usage (approximate)
+            # For Gemini, we'll use a very rough approximation that 1 token ≈ 4 characters
+            input_tokens = 0  # We don't know the exact input token count from the API
+            output_tokens = len(self.total_content) // 4
+            
+            # Send the message stop event
+            stop_event = {
+                "type": "message_stop",
+                "message": {
+                    "id": f"msg_{self.session_id}",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": self.total_content
+                        }
+                    ],
+                    "model": "gemini-2.5-pro-exp-03-25",
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens
+                    }
+                }
+            }
+            
+            yield f"data: {json.dumps(stop_event)}\n\n"
+            
+        except Exception as e:
+            # Handle any errors that occur during streaming
+            error_message = str(e)
+            print(f"Streaming error: {error_message}")
+            
+            error_event = {
+                "type": "error",
+                "error": {
+                    "message": error_message,
+                    "type": "stream_error"
+                }
+            }
+            
+            yield f"data: {json.dumps(error_event)}\n\n"
 
 # Special client class for Vercel that doesn't use the standard Anthropic library
 class VercelCompatibleClient:
@@ -356,6 +436,7 @@ class VercelCompatibleClient:
                             })
                         elif isinstance(content_item, dict) and "type" in content_item and "text" in content_item:
                             formatted_content.append(content_item)
+                    formatted_message["content"] = formatted_content
                 else:
                     formatted_message["content"] = msg["content"]
                 
