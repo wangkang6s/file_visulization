@@ -7,6 +7,7 @@ import os
 import re
 import time
 import traceback
+from google.genai import types
 # Updated import to be compatible with different versions of the Anthropic library
 try:
     from anthropic.types import TextBlock, MessageParam
@@ -396,6 +397,39 @@ def process_file():
     # Extract the API key and content
     api_key = data.get('api_key')
     content = data.get('content')
+
+    print(f"Processing request with content length: {len(content) if content else 0}")
+    print(f"Request JSON: {data}")
+    print('API Key:', api_key)
+
+    client = genai.Client(
+        api_key=os.environ.get("AIzaSyDwTBDTamIT68tvYi57OlbkRt-s6IbAMwc"),
+    )
+
+    model = "gemini-2.5-pro-exp-03-25"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text="who is the president of the united states?"),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        temperature=1,
+        top_p=0.95,
+        top_k=64,
+        max_output_tokens=65536,
+        response_mime_type="text/plain",
+    )
+
+    for chunk in client.models.generate_content_stream(
+        model=model,
+        contents=contents,
+        config=generate_content_config,
+    ):
+        print(chunk.text, end="")
+
     format_prompt = data.get('format_prompt', '')
     model = data.get('model', 'claude-3-7-sonnet-20250219')
     max_tokens = int(data.get('max_tokens', 128000))
