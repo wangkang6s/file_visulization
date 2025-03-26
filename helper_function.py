@@ -99,9 +99,20 @@ class GeminiStreamingResponse:
         self.html_segments = []
         self.start_time = time.time()
         self.received_content = False
+        self.iterator_complete = False
         
         # Log initialization
         print(f"Initialized GeminiStreamingResponse for session {session_id}")
+        
+        # Check if the stream_response is an iterator or a single response
+        self.is_iterator = hasattr(stream_response, '__iter__') and hasattr(stream_response, '__next__')
+        print(f"Response is iterator: {self.is_iterator}, type: {type(stream_response)}")
+        
+        # If it's a single response, we'll handle it differently
+        if not self.is_iterator and hasattr(stream_response, 'text'):
+            self.generated_text = stream_response.text
+            self.received_content = True
+            print(f"Single response mode - content length: {len(self.generated_text) if self.generated_text else 0}")
     
     def __enter__(self):
         print(f"Entering GeminiStreamingResponse context for session {self.session_id}")
@@ -136,12 +147,52 @@ class GeminiStreamingResponse:
     
     def __next__(self):
         try:
+            # If we've already indicated the iterator is complete, stop iteration
+            if self.iterator_complete:
+                raise StopIteration
+            
+            # Handle single-response mode (non-iterator)
+            if not self.is_iterator:
+                if not self.iterator_complete and self.generated_text:
+                    # Only return content once
+                    self.iterator_complete = True
+                    
+                    # Create a full content event with the entire text
+                    self.current_segment = self.generated_text
+                    self.current_segment_size = len(self.generated_text)
+                    self.html_segments.append(self.current_segment)
+                    self.segment_counter += 1
+                    
+                    # Estimate tokens for usage statistics
+                    input_tokens = max(1, int(len(self.generated_text.split()) * 1.3))  # ~1.3 tokens per word
+                    output_tokens = max(1, int(len(self.generated_text.split()) * 1.3))
+                    
+                    # Create a message_complete event
+                    complete_event = format_stream_event("content", {
+                        "type": "message_complete",
+                        "chunk_id": f"{self.session_id}_1",
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "total_cost": 0.0  # Gemini API is free
+                        },
+                        "html": self.generated_text,
+                        "session_id": self.session_id
+                    })
+                    print(f"Single response complete - content length: {len(self.generated_text)}")
+                    return complete_event
+                else:
+                    # If we get here, we're done
+                    raise StopIteration
+            
+            # Handle streaming mode (iterator)
             # Get the next chunk from the stream
             try:
                 chunk = next(self.stream_response)
                 self.chunk_count += 1
-            except StopIteration:
-                # End of stream
+            except (StopIteration, TypeError) as e:
+                # End of stream or not an iterator
                 # Send final usage statistics
                 if self.generated_text:
                     # Estimate tokens for usage statistics
@@ -162,6 +213,7 @@ class GeminiStreamingResponse:
                         "session_id": self.session_id
                     })
                     print(f"Stream complete, sending stats: in={input_tokens}, out={output_tokens}, chars={len(self.generated_text)}")
+                    self.iterator_complete = True
                     return complete_event
                 else:
                     print("Stream complete but no content was generated")

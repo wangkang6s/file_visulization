@@ -1794,43 +1794,60 @@ Here is the content to transform into a website:
                 
                 print(f"Starting Gemini generation with config: {generation_config}")
                 
-                # Generate content with streaming
+                # Generate content 
                 try:
-                    stream_response = model.generate_content(
-                        prompt,
-                        generation_config=generation_config,
-                        stream=True
-                    )
-                    print("Stream generation started successfully")
+                    # Try with streaming first
+                    print("Attempting to generate with streaming enabled")
+                    try:
+                        stream_response = model.generate_content(
+                            prompt,
+                            generation_config=generation_config,
+                            stream=True
+                        )
+                        print("Stream generation started successfully")
+                        
+                        # Use our custom streaming response class
+                        with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
+                            for chunk in gemini_stream:
+                                yield chunk
+                                
+                            # Stream end event
+                            print("Gemini stream completed successfully")
+                            yield format_stream_event("stream_end", {
+                                "message": "Stream complete",
+                                "session_id": session_id
+                            })
+                            
+                    except Exception as stream_error:
+                        # If streaming fails, fall back to non-streaming
+                        print(f"Streaming failed, falling back to non-streaming: {str(stream_error)}")
+                        response = model.generate_content(
+                            prompt,
+                            generation_config=generation_config,
+                            stream=False
+                        )
+                        
+                        # Process non-streaming response
+                        print(f"Non-streaming response received, length: {len(response.text) if hasattr(response, 'text') else 'unknown'}")
+                        
+                        # Use our streaming wrapper to handle the single response
+                        with GeminiStreamingResponse(response, session_id) as gemini_stream:
+                            for chunk in gemini_stream:
+                                yield chunk
+                                
+                            # Stream end event
+                            print("Gemini non-stream response processed successfully")
+                            yield format_stream_event("stream_end", {
+                                "message": "Stream complete",
+                                "session_id": session_id
+                            })
+                
                 except Exception as generate_error:
-                    error_detail = f"Failed to start generation: {str(generate_error)}"
+                    error_detail = f"Failed to generate content: {str(generate_error)}"
                     print(f"Error: {error_detail}")
                     yield format_stream_event("error", {
                         "type": "error", 
                         "error": "Generation failed",
-                        "details": error_detail,
-                        "session_id": session_id
-                    })
-                    return
-                
-                # Use our custom streaming response class
-                try:
-                    with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
-                        for chunk in gemini_stream:
-                            yield chunk
-                            
-                        # Stream end event
-                        print("Gemini stream completed successfully")
-                        yield format_stream_event("stream_end", {
-                            "message": "Stream complete",
-                            "session_id": session_id
-                        })
-                except Exception as stream_error:
-                    error_detail = f"Stream processing error: {str(stream_error)}"
-                    print(f"Error: {error_detail}")
-                    yield format_stream_event("error", {
-                        "type": "error", 
-                        "error": "Stream processing failed",
                         "details": error_detail,
                         "session_id": session_id
                     })
