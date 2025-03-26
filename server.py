@@ -1642,6 +1642,16 @@ def process_gemini():
             "sexual": "block_none",
             "dangerous": "block_none",
         }
+        # Print model details for debugging
+        print(f"Model ID: {model.model_id}")
+        print(f"Model Name: {model.model_name}")
+        print(f"Model Description: {model.description}")
+        print(f"Model Version: {model.version}")
+        print(f"Model Max Output Tokens: {model.max_output_tokens}")
+        print(f"Model Temperature: {model.temperature}")
+        print(f"Model Top P: {model.top_p}")
+        print(f"Model Top K: {model.top_k}")
+        
         
         # Create the prompt
         prompt = f"""
