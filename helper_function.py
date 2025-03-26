@@ -57,12 +57,14 @@ def create_gemini_client(api_key=None):
         api_key (str, optional): The API key for Gemini. If None, tries to use environment variable.
         
     Returns:
-        genai: The Google GenerativeAI client
+        Client: The Google GenerativeAI client
         
     Raises:
         ValueError: If no API key is provided or found in environment variables.
     """
     try:
+        from google import genai
+        
         # Use provided API key or try to get from environment
         if not api_key:
             api_key = os.environ.get('GEMINI_API_KEY')
@@ -70,9 +72,9 @@ def create_gemini_client(api_key=None):
         if not api_key:
             raise ValueError("No API key provided for Gemini. Please provide an API key.")
         
-        # Configure the client
-        genai.configure(api_key=api_key)
-        return genai
+        # Configure the client with the new Client-based approach
+        client = genai.Client(api_key=api_key)
+        return client
     except ImportError:
         raise ImportError("Google Generative AI package not installed. Install with 'pip install google-generativeai'")
     except Exception as e:

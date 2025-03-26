@@ -261,10 +261,6 @@ Here is the content to transform into a website:
             # Start timer
             start_time = time.time()
             
-            # Get the model
-            model = client.get_model(GEMINI_MODEL)
-            print(f"Successfully retrieved Gemini model: {GEMINI_MODEL}")
-            
             # Configure generation parameters
             generation_config = {
                 "max_output_tokens": max_tokens,
@@ -273,68 +269,21 @@ Here is the content to transform into a website:
                 "top_k": GEMINI_TOP_K
             }
             
-            # Generate the content
+            # Generate the content using the new Client-based approach
             print("Generating content using Gemini...")
-            response = model.generate_content(
-                prompt,
-                generation_config=generation_config,
-                stream=False
+            response = client.models.generate_content(
+                model=GEMINI_MODEL.replace("models/", ""),  # Remove 'models/' prefix as it's handled by the client
+                contents=prompt,
+                generation_config=generation_config
             )
             
-            # Wait a moment for the response to be ready
-            time.sleep(0.5)
-            
-            # Extract content using multiple methods
-            html_content = None
-            
-            # Try to get resolved text
+            # Get text directly
             try:
-                resolved = response.resolve()
-                html_content = resolved.text
-                print(f"Successfully resolved response with length: {len(html_content)}")
+                html_content = response.text
+                print(f"Got content directly from text attribute: {len(html_content)}")
             except Exception as e:
-                print(f"Could not resolve response: {str(e)}")
-            
-            # If resolve didn't work, try direct access
-            if not html_content:
-                try:
-                    html_content = response.text
-                    print(f"Got content directly from text attribute: {len(html_content)}")
-                except Exception as e:
-                    print(f"Could not get text attribute: {str(e)}")
-            
-            # If still no content, try parts
-            if not html_content:
-                try:
-                    if hasattr(response, 'parts') and response.parts:
-                        html_content = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
-                        print(f"Got content from parts: {len(html_content)}")
-                except Exception as e:
-                    print(f"Could not get parts: {str(e)}")
-            
-            # If still no content, try candidates
-            if not html_content:
-                try:
-                    if hasattr(response, 'candidates') and response.candidates:
-                        for candidate in response.candidates:
-                            if hasattr(candidate, 'content') and candidate.content:
-                                if hasattr(candidate.content, 'parts'):
-                                    for part in candidate.content.parts:
-                                        if hasattr(part, 'text'):
-                                            html_content = (html_content or '') + part.text
-                        print(f"Got content from candidates: {len(html_content) if html_content else 0}")
-                except Exception as e:
-                    print(f"Could not get candidates: {str(e)}")
-                    
-            # Last resort: use string conversion but check it's not an error message
-            if not html_content:
-                try:
-                    raw_content = str(response)
-                    if not raw_content.startswith('<') and '<!DOCTYPE html>' in raw_content:
-                        html_content = raw_content
-                        print(f"Got content from string conversion: {len(html_content)}")
-                except Exception as e:
-                    print(f"Could not convert to string: {str(e)}")
+                print(f"Could not get text attribute: {str(e)}")
+                html_content = None
             
             # Check if we have content
             if not html_content:
