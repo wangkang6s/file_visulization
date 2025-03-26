@@ -7,7 +7,9 @@ const $$ = document.querySelectorAll.bind(document);
 // API configuration - Make sure this is set correctly
 const API_URL = window.location.origin;
 console.log("API_URL set to:", API_URL);
-const API_KEY_STORAGE_KEY = 'claude_visualizer_api_key';
+const ANTHROPIC_API_KEY_STORAGE_KEY = 'claude_visualizer_api_key'; // Keep the original key name for backward compatibility
+const GEMINI_API_KEY_STORAGE_KEY = 'gemini_visualizer_api_key'; // New storage key for Gemini
+const API_PROVIDER_STORAGE_KEY = 'visualizer_api_provider';
 
 // Constants for stream handling
 const MAX_RECONNECT_ATTEMPTS = 10; // Increased from default
@@ -95,7 +97,8 @@ const elements = {
 // State
 let state = {
     activeTab: 'file',
-    apiKey: localStorage.getItem(API_KEY_STORAGE_KEY) || '',
+    apiKey: localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY) || '',
+    apiProvider: localStorage.getItem(API_PROVIDER_STORAGE_KEY) || 'gemini', // Default to Gemini instead of Anthropic
     apiKeyValidated: false,
     file: null,
     fileContent: '',
@@ -133,12 +136,28 @@ function init() {
     // Reset token stats display
     resetTokenStats();
     
-    // Load saved API key if available
-    const savedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+    // Set default API provider to Gemini
+    state.apiProvider = localStorage.getItem(API_PROVIDER_STORAGE_KEY) || 'gemini';
+    
+    // Set the radio button to match the saved provider
+    const radioBtns = document.querySelectorAll('input[name="api-provider"]');
+    radioBtns.forEach(btn => {
+        if (btn.value === state.apiProvider) {
+            btn.checked = true;
+        }
+    });
+    
+    // Update UI based on selected provider
+    updateApiProviderInfo(state.apiProvider);
+    updateUIForApiProvider(state.apiProvider);
+    
+    // Load saved API key based on the selected provider
+    const storageKey = state.apiProvider === 'anthropic' ? ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+    const savedApiKey = localStorage.getItem(storageKey) || '';
+    
     if (savedApiKey && elements.apiKeyInput) {
         elements.apiKeyInput.value = savedApiKey;
         state.apiKey = savedApiKey; // Make sure we update the state
-        validateApiKey(); // Automatically validate the saved key
     }
     
     // Setup event listeners
@@ -317,6 +336,12 @@ function setupEventListeners() {
     }
     
     console.log("Event listeners set up");
+    
+    // API provider selection
+    const apiProviderRadios = document.querySelectorAll('input[name="api-provider"]');
+    apiProviderRadios.forEach(radio => {
+        radio.addEventListener('change', handleApiProviderChange);
+    });
 }
 
 // Toggle theme between light and dark
@@ -343,11 +368,15 @@ function toggleTheme() {
 async function validateApiKey() {
     console.log('Validating API key...');
     const apiKey = elements.apiKeyInput.value.trim();
+    const apiProvider = state.apiProvider;
     
     if (!apiKey) {
         showNotification('Please enter an API key', 'error');
         return null;
     }
+    
+    // Show immediate feedback that validation is in progress
+    showToast('Validating API key...', 'info');
     
     try {
         const response = await fetch(`${API_URL}/api/validate-key`, {
@@ -355,7 +384,10 @@ async function validateApiKey() {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ api_key: apiKey })
+            body: JSON.stringify({ 
+                api_key: apiKey,
+                api_type: apiProvider
+            })
         });
         
         // Get response text once
@@ -380,8 +412,9 @@ async function validateApiKey() {
             
             if (response.ok && data.valid) {
                 console.log('API key is valid');
-                // Save the API key
-                localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+                // Save the API key to the appropriate storage key
+                const storageKey = apiProvider === 'anthropic' ? ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+                localStorage.setItem(storageKey, apiKey);
                 state.apiKey = apiKey;
                 showNotification(data.message || 'API key is valid', 'success');
                 updateKeyStatus('valid');
@@ -415,7 +448,11 @@ function updateKeyStatus(status) {
 function handleApiKeyInput(e) {
     const apiKey = e.target.value.trim();
     state.apiKey = apiKey;
-    localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+    
+    // Save the API key to the appropriate storage key
+    const storageKey = state.apiProvider === 'anthropic' ? ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+    localStorage.setItem(storageKey, apiKey);
+    
     updateGenerateButtonState();
 }
 
@@ -895,72 +932,366 @@ function updateGenerateButtonState() {
 
 // Generate Website
 async function generateWebsite() {
-    if (state.processing) {
-        return;
-    }
-    
     try {
-        state.processing = true;
-        
-        // Clear any previous generation
-        state.generatedHtml = '';
-        updateHtmlDisplay();
-        updatePreview();
-        
-        // Show the processing animation
-        startProcessingAnimation();
-        
-        // Start timing the generation
-        startElapsedTimeCounter();
-        
-        // Get the text content
-        let content = '';
-        // Use the correct element reference and also check state.textContent as a fallback
-        content = elements.inputText ? elements.inputText.value.trim() : (state.textContent || '');
-        
-        if (!content) {
-            throw new Error('Please enter some text first');
-        }
-        
-        // Get other parameters
-        const formatPrompt = elements.additionalPrompt ? elements.additionalPrompt.value.trim() : '';
-        const maxTokens = parseInt(elements.maxTokens ? elements.maxTokens.value : 128000, 10);
-        const temperature = parseFloat(elements.temperature ? elements.temperature.value : 1.0);
-        const apiKey = elements.apiKeyInput ? elements.apiKeyInput.value.trim() : state.apiKey;
-        const thinkingBudget = parseInt(elements.thinkingBudget ? elements.thinkingBudget.value : 32000, 10);
-        
+        // Validate API key
+        const apiKey = elements.apiKeyInput ? elements.apiKeyInput.value.trim() : '';
         if (!apiKey) {
-            throw new Error('Please enter your API key');
+            showToast('Please enter your API key', 'error');
+            return;
         }
         
-        // Update UI for generation start
+        // Set processing flag
+        state.processing = true;
+        state.userScrolledDuringGeneration = false; // Reset scroll tracking
+        
+        // Set up scroll tracking during generation
+        const scrollHandler = () => {
+            if (state.processing) {
+                state.userScrolledDuringGeneration = true;
+                console.log('User scrolled during generation');
+            }
+        };
+        window.addEventListener('scroll', scrollHandler);
+        
+        // Disable inputs during generation
         disableInputsDuringGeneration(true);
-        state.isGenerating = true;
-        showResultSection();
         
-        // Clear previous content and start animation
-        updateHtmlDisplay();
-        elements.previewIframe.srcdoc = '';
+        // Show processing UI
+        if (elements.generateBtn) {
+            elements.generateBtn.disabled = true;
+            elements.generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Generating...';
+        }
         
-        // Reset output stats
-        resetTokenStats();
+        // Show processing status
+        startProcessingAnimation();
         
         // Start elapsed time counter
         startElapsedTimeCounter();
         
-        // Show processing animation
-        startProcessingAnimation();
+        // Get input content based on active tab
+        const content = getInputContent();
+        if (!content) {
+            showToast('Please enter some text or upload a file', 'error');
+            resetGenerationUI();
+            window.removeEventListener('scroll', scrollHandler);
+            return;
+        }
         
-        // Use regular generation with streaming
-        await generateHTMLStreamWithReconnection(
-            apiKey, content, formatPrompt, 
-            'claude-3-7-sonnet-20240307', maxTokens, 
-            temperature, thinkingBudget
-        );
+        // Prepare settings from UI
+        const formatPrompt = elements.formatPrompt ? elements.formatPrompt.value.trim() : '';
+        const apiProvider = state.apiProvider;
+        const maxTokens = parseInt(elements.maxTokens ? elements.maxTokens.value : DEFAULT_MAX_TOKENS);
+        const temperature = parseFloat(elements.temperature ? elements.temperature.value : 0.7);
+        const thinkingBudget = parseInt(elements.thinkingBudget ? elements.thinkingBudget.value : 0);
+        
+        console.log(`Generating website with: provider=${apiProvider}, maxTokens=${maxTokens}, temperature=${temperature}, thinkingBudget=${thinkingBudget}`);
+        
+        // Reset token display
+        resetTokenStats();
+        
+        // Process with the selected API provider
+        if (apiProvider === 'gemini') {
+            // Use Gemini API with streaming if supported, otherwise use non-streaming
+            try {
+                await generateGeminiHTMLStream(
+                    apiKey, content, formatPrompt, 
+                    maxTokens, temperature
+                );
+            } catch (streamError) {
+                console.warn('Gemini streaming failed, falling back to non-streaming API:', streamError);
+                await generateGeminiHTML(
+                    apiKey, content, formatPrompt, 
+                    maxTokens, temperature
+                );
+            }
+        } else {
+            // Use Claude API with streaming
+            await generateHTMLStreamWithReconnection(
+                apiKey, content, formatPrompt, 
+                'claude-3-7-sonnet-20240307', maxTokens, 
+                temperature, thinkingBudget
+            );
+        }
+        
+        // Clean up scroll tracking
+        window.removeEventListener('scroll', scrollHandler);
     } catch (error) {
         console.error('Generation error:', error);
         showToast(`Error: ${error.message}`, 'error');
         resetGenerationUI();
+    }
+}
+
+// Function to update UI based on API provider
+function updateUIForApiProvider(provider) {
+    const generationSettings = document.querySelector('.bg-white.rounded-lg.shadow-md.p-5.transition-all.hover\\:shadow-lg:has(.fa-sliders-h)');
+    const usageStatsSection = document.querySelector('#result-section .bg-white.rounded-lg.shadow-md.p-5:has(.fa-chart-line)');
+    
+    if (provider === 'gemini') {
+        // For Gemini, hide the entire Generation Settings section
+        if (generationSettings) {
+            generationSettings.classList.add('hidden');
+        }
+        
+        // Hide usage stats for Gemini
+        if (usageStatsSection) {
+            usageStatsSection.classList.add('hidden');
+        }
+    } else {
+        // For Anthropic, show Generation Settings
+        if (generationSettings) {
+            generationSettings.classList.remove('hidden');
+        }
+        
+        // Show usage stats for Anthropic
+        if (usageStatsSection) {
+            usageStatsSection.classList.remove('hidden');
+        }
+        
+        // Make sure thinking budget is visible for Anthropic
+        if (elements.thinkingBudget && elements.thinkingBudget.parentNode) {
+            elements.thinkingBudget.parentNode.classList.remove('hidden');
+        }
+    }
+}
+
+// Add new function for Gemini streaming
+async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens, temperature) {
+    console.log("Starting Gemini HTML generation with streaming...");
+    
+    // Prepare state variables for streaming
+    let generatedContent = '';
+    let sessionId = '';
+    
+    try {
+        // Calculate approximate input tokens right away (1.3 tokens per word)
+        const inputTokens = Math.max(1, Math.floor(source.split(' ').length * 1.3));
+        console.log('Estimated input tokens:', inputTokens);
+        
+        // Update token stats display with input tokens immediately
+        updateUsageStatistics({
+            input_tokens: inputTokens,
+            output_tokens: 0
+        });
+        
+        // Create the request body
+        const requestBody = {
+            api_key: apiKey,
+            content: source,
+            format_prompt: formatPrompt,
+            max_tokens: maxTokens,
+            temperature: temperature
+        };
+        
+        // Add file information for file uploads
+        if (state.activeTab === 'file' && state.file) {
+            console.log(`Adding file upload info: ${state.fileName} (${formatFileSize(state.file.size)})`);
+            requestBody.file_name = state.fileName;
+            requestBody.file_content = state.fileContent;
+        }
+        
+        // Start the streaming request
+        console.log('Making fetch request to', `${API_URL}/api/process-gemini-stream`);
+        const response = await fetch(`${API_URL}/api/process-gemini-stream`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+        }
+        
+        // Get a reader for the stream
+        const reader = response.body.getReader();
+        let decoder = new TextDecoder();
+        let htmlBuffer = '';
+        
+        // Process stream chunks
+        while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+                console.log('Stream complete');
+                break;
+            }
+            
+            // Decode the chunk
+            const chunk = decoder.decode(value, { stream: true });
+            
+            // Process each line in the chunk
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (!line.trim() || !line.startsWith('data: ')) continue;
+                
+                try {
+                    // Extract the JSON data
+                    const eventData = JSON.parse(line.substring(6));
+                    
+                    // Handle different event types
+                    if (eventData.type === 'content_block_delta') {
+                        // Add the text to our buffer
+                        const text = eventData.delta?.text || '';
+                        htmlBuffer += text;
+                        generatedContent += text;
+                        
+                        // Update the UI with the HTML received so far
+                        updateHtmlDisplay(htmlBuffer);
+                        
+                        // Save to state immediately so it's available
+                        state.generatedHtml = generatedContent;
+                        
+                        // Update processing text
+                        setProcessingText(`Gemini is generating your visualization... (${formatFileSize(htmlBuffer.length)} generated)`);
+                    } else if (eventData.type === 'message_complete') {
+                        // Update usage statistics if available
+                        if (eventData.usage) {
+                            console.log('Received usage statistics:', eventData.usage);
+                            updateUsageStatistics(eventData.usage);
+                        }
+                    } else if (eventData.type === 'error') {
+                        throw new Error(eventData.error || 'Unknown streaming error');
+                    }
+                } catch (parseError) {
+                    console.error('Error parsing stream event:', parseError, line);
+                }
+            }
+        }
+        
+        // Ensure the generated content is saved to state
+        state.generatedHtml = generatedContent;
+        
+        // Final UI updates
+        updateHtmlDisplay(generatedContent);
+        updatePreview(generatedContent);
+        
+        // If we don't have token statistics yet, estimate them
+        if (!elements.inputTokens?.textContent || elements.inputTokens.textContent === '0') {
+            // Estimate input tokens based on source length (1 token ≈ 3.5 characters)
+            const estimatedInputTokens = Math.max(1, Math.floor(source.length / 3.5));
+            const estimatedOutputTokens = Math.max(1, Math.floor(generatedContent.length / 3.5));
+            
+            // Update usage statistics with our estimates
+            updateUsageStatistics({
+                input_tokens: estimatedInputTokens,
+                output_tokens: estimatedOutputTokens
+            });
+            
+            console.log('Updated with estimated token counts:', estimatedInputTokens, estimatedOutputTokens);
+        }
+        
+        // Complete generation
+        console.log('Generation complete with Gemini streaming');
+        setProcessingText('Generation complete!');
+        state.processing = false;
+        stopElapsedTimeCounter();
+        stopProcessingAnimation();
+        disableInputsDuringGeneration(false);
+        
+        // Show completion toast
+        showToast('Website generated successfully!', 'success');
+        
+        return generatedContent;
+    } catch (error) {
+        console.error('Gemini streaming error:', error);
+        throw error;
+    }
+}
+
+// Add non-streaming fallback for Gemini
+async function generateGeminiHTML(apiKey, source, formatPrompt, maxTokens, temperature) {
+    console.log("Starting Gemini HTML generation (non-streaming)...");
+    
+    try {
+        // Calculate approximate input tokens right away (1.3 tokens per word)
+        const inputTokens = Math.max(1, Math.floor(source.split(' ').length * 1.3));
+        console.log('Estimated input tokens:', inputTokens);
+        
+        // Update token stats display with input tokens immediately
+        updateUsageStatistics({
+            input_tokens: inputTokens,
+            output_tokens: 0
+        });
+        
+        // Show processing message
+        setProcessingText('Processing with Google Gemini (non-streaming)...');
+        
+        // Create the request body
+        const requestBody = {
+            api_key: apiKey,
+            content: source,
+            format_prompt: formatPrompt,
+            max_tokens: maxTokens,
+            temperature: temperature
+        };
+        
+        // Add file information for file uploads
+        if (state.activeTab === 'file' && state.file) {
+            requestBody.file_name = state.fileName;
+            requestBody.file_content = state.fileContent;
+        }
+        
+        // Make the non-streaming request
+        const response = await fetch(`${API_URL}/api/process-gemini`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Update UI with generated HTML
+        const html = data.html;
+        updateHtmlDisplay(html);
+        updatePreview(html);
+        
+        // Update usage statistics if available
+        if (data.usage) {
+            console.log('Received usage statistics from non-streaming API:', data.usage);
+            updateUsageStatistics(data.usage);
+        } else {
+            // If no usage data provided, estimate tokens
+            const estimatedInputTokens = Math.max(1, Math.floor(source.length / 3.5));
+            const estimatedOutputTokens = Math.max(1, Math.floor(html.length / 3.5));
+            
+            updateUsageStatistics({
+                input_tokens: estimatedInputTokens,
+                output_tokens: estimatedOutputTokens
+            });
+            
+            console.log('Updated with estimated token counts:', estimatedInputTokens, estimatedOutputTokens);
+        }
+        
+        // Save to state
+        state.generatedHtml = html;
+        
+        // Complete generation
+        console.log('Generation complete with Gemini (non-streaming)');
+        setProcessingText('Generation complete!');
+        state.processing = false;
+        stopElapsedTimeCounter();
+        stopProcessingAnimation();
+        disableInputsDuringGeneration(false);
+        
+        // Show completion toast
+        showToast('Website generated successfully!', 'success');
+        
+        return html;
+    } catch (error) {
+        console.error('Gemini generation error:', error);
+        throw error;
     }
 }
 
@@ -1505,16 +1836,30 @@ function updateHtmlPreview(html) {
 }
 
 function showResultSection() {
-    // Show the result section if it exists
-    if (elements.resultSection) {
-        elements.resultSection.classList.remove('hidden');
+    // Show the result section
+    const resultSection = document.getElementById('result-section');
+    if (resultSection) {
+        resultSection.classList.remove('hidden');
         
-        // Instead of scrolling to results section, scroll to processing section
-        setTimeout(() => {
-            if (elements.processingStatus) {
-                elements.processingStatus.scrollIntoView({ behavior: 'smooth' });
+        // Hide usage stats if Gemini is selected
+        if (state.apiProvider === 'gemini') {
+            const usageStatsSection = resultSection.querySelector('.bg-white.rounded-lg.shadow-md.p-5:has(.fa-chart-line)');
+            if (usageStatsSection) {
+                usageStatsSection.classList.add('hidden');
             }
-        }, 500);
+        }
+        
+        // Only scroll to result section if generation is complete
+        if (!state.processing) {
+            // Give some time for the HTML to render before scrolling
+            setTimeout(() => {
+                // Only scroll if the user hasn't scrolled manually after generation started
+                if (!state.userScrolledDuringGeneration) {
+                    resultSection.scrollIntoView({ behavior: 'smooth' });
+                    console.log('Scrolled to result section');
+                }
+            }, 500);
+        }
     }
 }
 
@@ -1689,8 +2034,14 @@ async function processWithStreaming(data) {
     }
 }
 
-function updateHtmlDisplay() {
-    const htmlContent = state.generatedHtml || '';
+function updateHtmlDisplay(directContent) {
+    // Use the provided content or get from state
+    const htmlContent = directContent || state.generatedHtml || '';
+    
+    // Set the content for the HTML output textarea if it exists
+    if (elements.htmlOutput) {
+        elements.htmlOutput.value = htmlContent;
+    }
     
     // Set the raw HTML content for display
     const rawHtmlElement = document.getElementById('raw-html');
@@ -1705,14 +2056,18 @@ function updateHtmlDisplay() {
     }
     
     // If preview is available, update it
-    updatePreview();
+    updatePreview(htmlContent);
     
     // Show the result section with both preview and code
     showResultSection();
+    
+    // Log debug info
+    console.log(`updateHtmlDisplay called with content length: ${htmlContent.length}`);
 }
 
-function updatePreview() {
-    const htmlContent = state.generatedHtml || '';
+function updatePreview(directContent) {
+    // Use the provided content or get from state
+    const htmlContent = directContent || state.generatedHtml || '';
     if (!htmlContent) return;
     
     // Get the iframe
@@ -1720,13 +2075,36 @@ function updatePreview() {
     if (!iframe) return;
     
     try {
+        // Clean HTML content if it contains markdown-style code blocks from Gemini
+        let cleanedContent = htmlContent;
+        if (state.apiProvider === 'gemini' && htmlContent.includes('```html')) {
+            // Extract the actual HTML from between the markdown code blocks
+            const htmlMatch = htmlContent.match(/```html\s*([\s\S]*?)\s*```/);
+            if (htmlMatch && htmlMatch[1]) {
+                cleanedContent = htmlMatch[1].trim();
+                console.log('Cleaned Gemini markdown code blocks from HTML output');
+                
+                // Also update the state and display with the cleaned content
+                state.generatedHtml = cleanedContent;
+                if (elements.htmlOutput) {
+                    elements.htmlOutput.value = cleanedContent;
+                }
+                if (document.getElementById('raw-html')) {
+                    document.getElementById('raw-html').textContent = cleanedContent;
+                    if (window.Prism) {
+                        Prism.highlightElement(document.getElementById('raw-html'));
+                    }
+                }
+            }
+        }
+        
         // Write the HTML to the iframe
         const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
         iframeDoc.open();
-        iframeDoc.write(htmlContent);
+        iframeDoc.write(cleanedContent);
         iframeDoc.close();
         
-        console.log('Preview updated with HTML content of length:', htmlContent.length);
+        console.log('Preview updated with HTML content of length:', cleanedContent.length);
     } catch (error) {
         console.error('Error updating preview:', error);
     }
@@ -1819,7 +2197,7 @@ function downloadHtmlFile() {
         const a = document.createElement('a');
         a.href = url;
         
-        // Create a descriptive filename
+        // Create a descriptive filename that always includes "visualization"
         let filename = 'visualization.html';
         if (state.activeTab === 'text' && elements.inputText && elements.inputText.value) {
             // Extract first few words from text input to create filename
@@ -1832,7 +2210,7 @@ function downloadHtmlFile() {
                 .substring(0, 30); // Limit length
                 
             if (firstFewWords) {
-                filename = `${firstFewWords}.html`;
+                filename = `${firstFewWords}_visualization.html`;
             }
         } else if (state.fileName) {
             // If a file was uploaded, base the name on that
@@ -1873,19 +2251,22 @@ function openPreviewInNewTab() {
 // Toast Notification
 function showToast(message, type) {
     const toast = document.createElement('div');
-    toast.className = `fixed bottom-4 right-4 z-50 p-4 rounded-lg shadow-lg ${
+    toast.className = `fixed top-4 left-1/2 transform -translate-x-1/2 z-50 p-4 rounded-lg shadow-lg ${
         type === 'success' ? 'bg-green-500' : 
         type === 'error' ? 'bg-red-500' : 
         'bg-blue-500'
-    } text-white max-w-xs animate-fade-in`;
+    } text-white max-w-md w-full animate-fade-in text-center`;
+    
+    toast.style.minWidth = '300px';
+    toast.style.fontWeight = 'bold';
     
     toast.innerHTML = `
-        <div class="flex items-center">
+        <div class="flex items-center justify-center">
             <i class="fas ${
                 type === 'success' ? 'fa-check-circle' : 
                 type === 'error' ? 'fa-exclamation-circle' : 
                 'fa-info-circle'
-            } mr-2"></i>
+            } mr-2 text-xl"></i>
             <span>${message}</span>
         </div>
     `;
@@ -1895,6 +2276,7 @@ function showToast(message, type) {
     // Remove the toast after 5 seconds
     setTimeout(() => {
         toast.classList.add('opacity-0');
+        toast.style.transition = 'opacity 0.3s ease';
         setTimeout(() => {
             toast.remove();
         }, 300);
@@ -1937,16 +2319,27 @@ async function analyzeTokens(content) {
             throw new Error(data.error);
         }
         
-        // Update token info display
+        // Update token info display based on API provider
         if (elements.tokenInfo) {
-            elements.tokenInfo.innerHTML = `
-                <div class="token-analysis">
-                    <h3>Token Analysis</h3>
-                    <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
-                    <p>Estimated Input Cost: $${data.estimated_cost.toFixed(4)}</p>
-                    <p>Maximum Safe Input Tokens: 200,000</p>
-                </div>
-            `;
+            if (state.apiProvider === 'gemini') {
+                // For Gemini, only show estimated tokens without cost
+                elements.tokenInfo.innerHTML = `
+                    <div class="token-analysis">
+                        <h3>Token Analysis</h3>
+                        <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
+                    </div>
+                `;
+            } else {
+                // For Anthropic, show full token analysis with cost
+                elements.tokenInfo.innerHTML = `
+                    <div class="token-analysis">
+                        <h3>Token Analysis</h3>
+                        <p>Estimated Input Tokens: ${data.estimated_tokens.toLocaleString()}</p>
+                        <p>Estimated Input Cost: $${data.estimated_cost.toFixed(4)}</p>
+                        <p>Maximum Safe Input Tokens: 200,000</p>
+                    </div>
+                `;
+            }
         }
         
         return data;
@@ -2265,4 +2658,87 @@ function updateTokenStats(usage) {
     elements.inputTokens.textContent = usage.input_tokens.toLocaleString();
     elements.outputTokens.textContent = usage.output_tokens.toLocaleString();
     elements.totalCost.textContent = formatCostDisplay(usage.total_cost);
+}
+
+// Wrapper for updateTokenStats to handle Gemini usage data
+function updateUsageStatistics(usage) {
+    if (!usage) return;
+    
+    // For Gemini, we don't calculate cost since it's free
+    if (state.apiProvider === 'gemini') {
+        if (elements.inputTokens) {
+            elements.inputTokens.textContent = usage.input_tokens.toLocaleString();
+        }
+        if (elements.outputTokens) {
+            elements.outputTokens.textContent = usage.output_tokens.toLocaleString();
+        }
+        if (elements.totalCost) {
+            elements.totalCost.textContent = '-'; // Always display as free for Gemini
+        }
+    } else {
+        // For Anthropic, calculate cost if not provided
+        if (!usage.total_cost) {
+            // Claude 3 pricing: $3/M input tokens, $15/M output tokens
+            usage.total_cost = (usage.input_tokens / 1000000) * 3.0 + (usage.output_tokens / 1000000) * 15.0;
+        }
+        
+        // Update the token stats display
+        updateTokenStats(usage);
+    }
+}
+
+// Function to handle API provider change
+function handleApiProviderChange(e) {
+    const oldProvider = state.apiProvider;
+    const newProvider = e.target.value;
+    
+    // Save the current API key to the appropriate storage
+    const currentApiKey = elements.apiKeyInput.value.trim();
+    if (currentApiKey) {
+        const oldStorageKey = oldProvider === 'anthropic' ? ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+        localStorage.setItem(oldStorageKey, currentApiKey);
+    }
+    
+    // Update the state with the new provider
+    state.apiProvider = newProvider;
+    localStorage.setItem(API_PROVIDER_STORAGE_KEY, newProvider);
+    
+    // Load the API key for the new provider
+    const newStorageKey = newProvider === 'anthropic' ? ANTHROPIC_API_KEY_STORAGE_KEY : GEMINI_API_KEY_STORAGE_KEY;
+    const savedApiKey = localStorage.getItem(newStorageKey) || '';
+    
+    // Update the input field with the saved API key for the new provider
+    if (elements.apiKeyInput) {
+        elements.apiKeyInput.value = savedApiKey;
+        state.apiKey = savedApiKey;
+    }
+    
+    // Update the UI to show relevant API key info
+    updateApiProviderInfo(newProvider);
+    
+    // Clear validation status when switching providers
+    if (elements.keyStatus) {
+        elements.keyStatus.classList.add('hidden');
+    }
+    
+    // Update UI elements based on API provider
+    updateUIForApiProvider(newProvider);
+}
+
+// Function to update API provider info in the UI
+function updateApiProviderInfo(provider) {
+    const anthropicInfo = document.getElementById('anthropic-info');
+    const geminiInfo = document.getElementById('gemini-info');
+    
+    if (anthropicInfo && geminiInfo) {
+        if (provider === 'anthropic') {
+            anthropicInfo.classList.remove('hidden');
+            geminiInfo.classList.add('hidden');
+            elements.apiKeyInput.placeholder = "Enter your Anthropic API key";
+        } else {
+            anthropicInfo.classList.add('hidden');
+            geminiInfo.classList.remove('hidden');
+            elements.apiKeyInput.placeholder = "Enter your Google Gemini API key";
+        }
+    }
 } 
