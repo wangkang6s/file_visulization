@@ -845,4 +845,16 @@ class VercelMessageResponse:
         def __init__(self, input_tokens, output_tokens, thinking_tokens):
             self.input_tokens = input_tokens
             self.output_tokens = output_tokens
-            self.thinking_tokens = thinking_tokens 
+            self.thinking_tokens = thinking_tokens
+
+def format_stream_event(event_type, data=None):
+    """
+    Format data as a server-sent event
+    """
+    event = {"type": event_type}
+    
+    if data:
+        event.update(data)
+    
+    # Format as SSE
+    return f"data: {json.dumps(event)}\n\n" 
