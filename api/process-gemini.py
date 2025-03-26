@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import traceback
+import time
 
 # Add the parent directory to sys.path
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -10,7 +11,7 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 # Constants
-GEMINI_MODEL = "gemini-1.5-pro"
+GEMINI_MODEL = "gemini-2.5-pro-exp-03-25"
 GEMINI_MAX_OUTPUT_TOKENS = 128000
 GEMINI_TEMPERATURE = 1.0
 GEMINI_TOP_P = 0.95
@@ -21,15 +22,28 @@ try:
     from helper_function import create_gemini_client
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
+    print("Google Generative AI module is available")
 except ImportError:
     GEMINI_AVAILABLE = False
-    print("Google Generative AI package not available. Some features may be limited.")
+    print("Google Generative AI module is not installed")
 
 # System instruction
-SYSTEM_INSTRUCTION = """
-You are a web developer specialized in converting content into beautiful, accessible, responsive HTML with modern CSS.
-Generate a single-page website from the given content.
-"""
+SYSTEM_INSTRUCTION = """You are a web developer tasked with turning content into a beautiful, responsive website. 
+Create valid, semantic HTML with embedded CSS (using Tailwind CSS) that transforms the provided content into a well-structured, modern-looking website.
+
+Follow these guidelines:
+1. Use Tailwind CSS for styling (via CDN) and create a beautiful, responsive design
+2. Structure the content logically with appropriate HTML5 semantic elements
+3. Make the website responsive across all device sizes
+4. Include dark mode support with a toggle button
+5. For code blocks, use proper syntax highlighting
+6. Ensure accessibility by using appropriate ARIA attributes and semantics
+7. Add subtle animations where appropriate
+8. Include a navigation system if the content has distinct sections
+9. Avoid using external JavaScript libraries other than Tailwind
+10. Only generate HTML, CSS, and minimal JavaScript - no backend code or server setup
+
+Return ONLY the complete HTML document with no explanations. The HTML should be ready to use as a standalone file."""
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -49,7 +63,7 @@ def handler(request):
         
         # Extract the API key and content
         api_key = data.get('api_key')
-        content = data.get('content')
+        content = data.get('content', '')
         format_prompt = data.get('format_prompt', '')
         max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
         temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
@@ -184,6 +198,191 @@ Here is the content to transform into a website:
             'details': traceback.format_exc()
         }), 500
 
-@app.route('/', methods=['POST'])
+@app.route('/', methods=['POST'], endpoint='process_gemini')
 def process_gemini():
-    return handler(request) 
+    """
+    Process a non-streaming request using Gemini API.
+    """
+    try:
+        # Extract request data
+        data = request.get_json()
+        api_key = data.get('api_key')
+        
+        # Check for both 'content' and 'source' parameters for compatibility
+        content = data.get('content', '')
+        if not content:
+            content = data.get('source', '')  # Fallback to 'source' if 'content' is empty
+        
+        # If content is empty, return an error
+        if not content:
+            return jsonify({"success": False, "error": "Source code or text is required"}), 400
+        
+        format_prompt = data.get('format_prompt', '')
+        max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
+        temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
+        
+        # Check if Gemini is available
+        if not GEMINI_AVAILABLE:
+            error_msg = 'Google Generative AI package is not installed on the server.'
+            print(f"Error: {error_msg}")
+            return jsonify({
+                'error': error_msg,
+                'details': 'Please install the Google Generative AI package with "pip install google-generativeai"'
+            }), 500
+        
+        # Create Gemini client
+        try:
+            client = create_gemini_client(api_key)
+            print(f"Gemini client created successfully with API key: {api_key[:4]}...")
+        except Exception as e:
+            error_msg = f"API key validation failed: {str(e)}"
+            print(f"Error: {error_msg}")
+            return jsonify({
+                "success": False,
+                "error": error_msg
+            })
+        
+        # Prepare prompt
+        prompt = f"""
+{SYSTEM_INSTRUCTION}
+
+Here is the content to transform into a website:
+
+{content[:100000]}
+"""
+        
+        if format_prompt:
+            prompt += f"\n\n{format_prompt}"
+        
+        print(f"Prepared prompt for Gemini with length: {len(prompt)}")
+        
+        # Generate content
+        try:
+            # Start timer
+            start_time = time.time()
+            
+            # Get the model
+            model = client.get_model(GEMINI_MODEL)
+            print(f"Successfully retrieved Gemini model: {GEMINI_MODEL}")
+            
+            # Configure generation parameters
+            generation_config = {
+                "max_output_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": GEMINI_TOP_P,
+                "top_k": GEMINI_TOP_K
+            }
+            
+            # Generate the content
+            print("Generating content using Gemini...")
+            response = model.generate_content(
+                prompt,
+                generation_config=generation_config,
+                stream=False
+            )
+            
+            # Wait a moment for the response to be ready
+            time.sleep(0.5)
+            
+            # Extract content using multiple methods
+            html_content = None
+            
+            # Try to get resolved text
+            try:
+                resolved = response.resolve()
+                html_content = resolved.text
+                print(f"Successfully resolved response with length: {len(html_content)}")
+            except Exception as e:
+                print(f"Could not resolve response: {str(e)}")
+            
+            # If resolve didn't work, try direct access
+            if not html_content:
+                try:
+                    html_content = response.text
+                    print(f"Got content directly from text attribute: {len(html_content)}")
+                except Exception as e:
+                    print(f"Could not get text attribute: {str(e)}")
+            
+            # If still no content, try parts
+            if not html_content:
+                try:
+                    if hasattr(response, 'parts') and response.parts:
+                        html_content = ''.join(part.text for part in response.parts if hasattr(part, 'text'))
+                        print(f"Got content from parts: {len(html_content)}")
+                except Exception as e:
+                    print(f"Could not get parts: {str(e)}")
+            
+            # If still no content, try candidates
+            if not html_content:
+                try:
+                    if hasattr(response, 'candidates') and response.candidates:
+                        for candidate in response.candidates:
+                            if hasattr(candidate, 'content') and candidate.content:
+                                if hasattr(candidate.content, 'parts'):
+                                    for part in candidate.content.parts:
+                                        if hasattr(part, 'text'):
+                                            html_content = (html_content or '') + part.text
+                        print(f"Got content from candidates: {len(html_content) if html_content else 0}")
+                except Exception as e:
+                    print(f"Could not get candidates: {str(e)}")
+                    
+            # Last resort: use string conversion but check it's not an error message
+            if not html_content:
+                try:
+                    raw_content = str(response)
+                    if not raw_content.startswith('<') and '<!DOCTYPE html>' in raw_content:
+                        html_content = raw_content
+                        print(f"Got content from string conversion: {len(html_content)}")
+                except Exception as e:
+                    print(f"Could not convert to string: {str(e)}")
+            
+            # Check if we have content
+            if not html_content:
+                print("Failed to extract any content from Gemini response")
+                return jsonify({
+                    "success": False,
+                    "error": "Could not extract content from Gemini response"
+                }), 500
+            
+            end_time = time.time()
+            generation_time = end_time - start_time
+            
+            # Calculate tokens (approximate)
+            input_tokens = max(1, int(len(prompt.split()) * 1.3))
+            output_tokens = max(1, int(len(html_content.split()) * 1.3))
+            
+            print(f"Successfully generated HTML with {output_tokens} tokens in {generation_time:.2f}s")
+            
+            # Return the response
+            return jsonify({
+                "success": True,
+                "html": html_content,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "generation_time": generation_time
+                }
+            })
+            
+        except Exception as generation_error:
+            error_msg = f"Gemini generation error: {str(generation_error)}"
+            print(f"Error: {error_msg}")
+            traceback.print_exc()
+            
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "details": traceback.format_exc()
+            }), 500
+            
+    except Exception as request_error:
+        error_msg = f"Error in request handler: {str(request_error)}"
+        print(f"Error: {error_msg}")
+        traceback.print_exc()
+        
+        return jsonify({
+            "success": False,
+            "error": error_msg,
+            "details": traceback.format_exc()
+        }), 500 

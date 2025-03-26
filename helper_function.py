@@ -49,306 +49,48 @@ def create_anthropic_client(api_key):
             print(f"Custom client also failed: {str(e2)}")
             raise Exception(f"Failed to create Anthropic client: {str(e)}")
 
-def create_gemini_client(api_key):
-    """Create a Google Gemini client with the given API key."""
-    if not GEMINI_AVAILABLE:
-        raise ImportError("Google Generative AI package is not installed. Please install it with 'pip install google-generativeai'.")
+def create_gemini_client(api_key=None):
+    """
+    Creates and returns a Google GenerativeAI client with the provided API key.
     
-    print(f"Creating Google Gemini client with API key: {api_key[:8]}...")
-    
-    # Check if API key is valid format
-    if not api_key or not api_key.strip():
-        raise ValueError("API key cannot be empty")
-    
+    Args:
+        api_key (str, optional): The API key for Gemini. If None, tries to use environment variable.
+        
+    Returns:
+        genai: The Google GenerativeAI client
+        
+    Raises:
+        ValueError: If no API key is provided or found in environment variables.
+    """
     try:
-        # Configure the Gemini client
+        # Use provided API key or try to get from environment
+        if not api_key:
+            api_key = os.environ.get('GEMINI_API_KEY')
+        
+        if not api_key:
+            raise ValueError("No API key provided for Gemini. Please provide an API key.")
+        
+        # Configure the client
         genai.configure(api_key=api_key)
-        
-        # Create a simple wrapper class that provides the methods expected by the server
-        class GeminiClient:
-            def __init__(self):
-                pass
-                
-            def get_model(self, model_name):
-                """Create and return a GenerativeModel instance for the specified model."""
-                try:
-                    return genai.GenerativeModel(model_name)
-                except Exception as e:
-                    print(f"Error creating model {model_name}: {str(e)}")
-                    raise
-        
-        # Create and return the client wrapper
-        return GeminiClient()
-            
+        return genai
+    except ImportError:
+        raise ImportError("Google Generative AI package not installed. Install with 'pip install google-generativeai'")
     except Exception as e:
-        print(f"Gemini client creation failed: {str(e)}")
-        raise Exception(f"Failed to create Google Gemini client: {str(e)}")
+        raise ValueError(f"Failed to create Gemini client: {str(e)}")
 
-class GeminiStreamingResponse:
-    """Custom class to handle streaming responses from Gemini"""
+def format_stream_event(event_type, data):
+    """
+    Formats a Server-Sent Event (SSE) message for streaming.
     
-    def __init__(self, stream_response, session_id):
-        self.stream_response = stream_response
-        self.session_id = session_id
-        self.chunk_count = 0
-        self.generated_text = ""
-        self.current_segment = ""
-        self.current_segment_size = 0
-        self.segment_counter = 0
-        self.max_segment_size = 16384  # 16KB per segment
-        self.html_segments = []
-        self.start_time = time.time()
-        self.received_content = False
-        self.iterator_complete = False
+    Args:
+        event_type (str): The type of event (e.g., 'content', 'error')
+        data (dict): The data to include in the event
         
-        # Log initialization
-        print(f"Initialized GeminiStreamingResponse for session {session_id}")
-        
-        # Check if the stream_response is an iterator or a single response
-        self.is_iterator = hasattr(stream_response, '__iter__') and hasattr(stream_response, '__next__')
-        print(f"Response is iterator: {self.is_iterator}, type: {type(stream_response)}")
-        
-        # If it's a single response, we'll handle it differently
-        if not self.is_iterator:
-            try:
-                # For non-streaming responses, safely check for text content
-                if hasattr(stream_response, 'text'):
-                    self.generated_text = stream_response.text
-                    self.received_content = True
-                # If response has parts (common for Gemini)
-                elif hasattr(stream_response, 'parts') and len(stream_response.parts) > 0:
-                    self.generated_text = stream_response.parts[0].text
-                    self.received_content = True
-                # Last resort, try string representation
-                else:
-                    self.generated_text = str(stream_response)
-                    self.received_content = True
-                
-                print(f"Single response mode - content length: {len(self.generated_text) if self.generated_text else 0}")
-            except Exception as e:
-                print(f"Error extracting text from non-streaming response: {str(e)}")
-                # We'll try to handle this in __next__
-    
-    def __enter__(self):
-        print(f"Entering GeminiStreamingResponse context for session {self.session_id}")
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        end_time = time.time()
-        elapsed = end_time - self.start_time
-        
-        if exc_type:
-            print(f"Exception in GeminiStreamingResponse: {exc_type.__name__}: {exc_val}")
-            if exc_tb:
-                traceback.print_tb(exc_tb)
-            return False  # Re-raise the exception
-        
-        # Send a final segment with content if content was received but not yet sent
-        if self.received_content and self.current_segment and self.current_segment_size > 0:
-            try:
-                final_segment_event = self._create_content_event()
-                print(f"Sending final segment {self.segment_counter} with size {self.current_segment_size}")
-                return final_segment_event
-            except Exception as e:
-                print(f"Error sending final segment: {str(e)}")
-        
-        # Log completion statistics
-        total_segments = len(self.html_segments)
-        total_text_length = len(self.generated_text)
-        print(f"GeminiStreamingResponse completed: {total_segments} segments, {total_text_length} chars in {elapsed:.2f}s")
-    
-    def __iter__(self):
-        return self
-    
-    def __next__(self):
-        # If we've already completed iteration, stop immediately
-        if self.iterator_complete:
-            print("Iterator already marked as complete, stopping iteration")
-            raise StopIteration
-        
-        # Handle single-response mode (non-iterator)
-        if not self.is_iterator:
-            # Only return content once, then mark as complete
-            self.iterator_complete = True
-            
-            if not self.generated_text:
-                print("No content in non-streaming response")
-                raise StopIteration
-            
-            # Create a full content event with the entire text
-            print(f"Creating complete event for non-streaming response: {len(self.generated_text)} chars")
-            complete_event = format_stream_event("content", {
-                "type": "message_complete",
-                "chunk_id": f"{self.session_id}_complete",
-                "usage": {
-                    "input_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                    "output_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                    "total_tokens": max(2, int(len(self.generated_text.split()) * 2.6)),
-                    "total_cost": 0.0
-                },
-                "html": self.generated_text,
-                "session_id": self.session_id
-            })
-            return complete_event
-        
-        # For streaming mode, we need to handle the iterator
-        try:
-            # Get the next chunk from the stream
-            chunk = next(self.stream_response)
-            self.chunk_count += 1
-            
-            # Extract content from the chunk
-            content_text = ""
-            if hasattr(chunk, 'text'):
-                content_text = chunk.text
-            elif hasattr(chunk, 'parts') and chunk.parts:
-                content_text = chunk.parts[0].text
-            
-            # Only process if we have content
-            if content_text:
-                print(f"Received chunk {self.chunk_count} with {len(content_text)} chars")
-                self.received_content = True
-                self.generated_text += content_text
-                self.current_segment += content_text
-                self.current_segment_size += len(content_text)
-                
-                # Check if we should send this segment
-                if self.current_segment_size >= 1024:  # Send every 1KB or so
-                    self.html_segments.append(self.current_segment)
-                    self.segment_counter += 1
-                    
-                    # Create delta event
-                    delta_event = format_stream_event("content", {
-                        "type": "content_block_delta",
-                        "chunk_id": f"{self.session_id}_{self.chunk_count}",
-                        "delta": {"text": self.current_segment},
-                        "session_id": self.session_id
-                    })
-                    
-                    # Reset segment buffer
-                    self.current_segment = ""
-                    self.current_segment_size = 0
-                    
-                    return delta_event
-                
-                # If not sending a segment, occasionally send keepalive
-                if self.chunk_count % 5 == 0:
-                    return format_stream_event("keepalive", {
-                        "timestamp": time.time(),
-                        "session_id": self.session_id,
-                        "chunk_count": self.chunk_count
-                    })
-                
-                # If we didn't return anything, call next again recursively
-                # This avoids buffer buildup by only sending meaningful events
-                return self.__next__()
-            
-            # No content in this chunk, try the next one
-            return self.__next__()
-        
-        except StopIteration:
-            # End of stream - send any remaining content
-            self.iterator_complete = True
-            
-            if self.current_segment and len(self.current_segment) > 0:
-                print(f"Sending final segment with {len(self.current_segment)} chars")
-                delta_event = format_stream_event("content", {
-                    "type": "content_block_delta",
-                    "chunk_id": f"{self.session_id}_final_delta",
-                    "delta": {"text": self.current_segment},
-                    "session_id": self.session_id
-                })
-                self.current_segment = ""
-                return delta_event
-            
-            if self.generated_text:
-                print(f"Sending completion event with {len(self.generated_text)} chars total")
-                return format_stream_event("content", {
-                    "type": "message_complete",
-                    "chunk_id": f"{self.session_id}_complete",
-                    "usage": {
-                        "input_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                        "output_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                        "total_tokens": max(2, int(len(self.generated_text.split()) * 2.6)),
-                        "total_cost": 0.0
-                    },
-                    "html": self.generated_text,
-                    "session_id": self.session_id
-                })
-            
-            # No content was generated
-            print("No content was generated in the stream")
-            raise StopIteration
-        
-        except Exception as e:
-            print(f"Error processing stream: {str(e)}")
-            
-            # Try to handle IncompleteIterationError by resolving the response
-            if "IncompleteIterationError" in str(e) and hasattr(self.stream_response, 'resolve'):
-                try:
-                    print("Attempting to resolve incomplete response...")
-                    resolved = self.stream_response.resolve()
-                    if hasattr(resolved, 'text'):
-                        self.generated_text = resolved.text
-                        self.received_content = True
-                        self.iterator_complete = True
-                        
-                        print(f"Successfully resolved content: {len(self.generated_text)} chars")
-                        return format_stream_event("content", {
-                            "type": "message_complete",
-                            "chunk_id": f"{self.session_id}_resolved",
-                            "usage": {
-                                "input_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                                "output_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                                "total_tokens": max(2, int(len(self.generated_text.split()) * 2.6)),
-                                "total_cost": 0.0
-                            },
-                            "html": self.generated_text,
-                            "session_id": self.session_id
-                        })
-                except Exception as resolve_error:
-                    print(f"Error resolving response: {str(resolve_error)}")
-            
-            # If we have generated content despite the error, return it
-            if self.generated_text:
-                self.iterator_complete = True
-                
-                print(f"Returning content despite error: {len(self.generated_text)} chars")
-                return format_stream_event("content", {
-                    "type": "message_complete",
-                    "chunk_id": f"{self.session_id}_error",
-                    "usage": {
-                        "input_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                        "output_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
-                        "total_tokens": max(2, int(len(self.generated_text.split()) * 2.6)),
-                        "total_cost": 0.0
-                    },
-                    "html": self.generated_text,
-                    "session_id": self.session_id
-                })
-            
-            # No content, return an error event
-            self.iterator_complete = True
-            return format_stream_event("error", {
-                "type": "error",
-                "error": f"Error processing Gemini chunk: {str(e)}",
-                "details": traceback.format_exc(),
-                "session_id": self.session_id
-            })
-    
-    def _create_content_event(self):
-        """Create a content event for the current segment"""
-        content_data = {
-            "type": "content_block_delta",
-            "chunk_id": f"{self.session_id}_{self.chunk_count}",
-            "delta": {
-                "text": self.current_segment
-            },
-            "segment": self.segment_counter,
-            "session_id": self.session_id,
-            "chunk_count": self.chunk_count
-        }
-        return format_stream_event("content", content_data)
+    Returns:
+        str: A formatted SSE message
+    """
+    message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    return message
 
 # Special client class for Vercel that doesn't use the standard Anthropic library
 class VercelCompatibleClient:
@@ -951,16 +693,4 @@ class VercelMessageResponse:
         def __init__(self, input_tokens, output_tokens, thinking_tokens):
             self.input_tokens = input_tokens
             self.output_tokens = output_tokens
-            self.thinking_tokens = thinking_tokens
-
-def format_stream_event(event_type, data=None):
-    """
-    Format data as a server-sent event
-    """
-    event = {"type": event_type}
-    
-    if data:
-        event.update(data)
-    
-    # Format as SSE
-    return f"data: {json.dumps(event)}\n\n" 
+            self.thinking_tokens = thinking_tokens 
