@@ -6,6 +6,7 @@ import requests
 import time
 import uuid
 import base64
+import traceback
 
 # Import Google Generative AI package
 try:
@@ -87,7 +88,7 @@ class GeminiStreamingResponse:
     """Class to handle streaming responses from Google Gemini API"""
     def __init__(self, stream_response, session_id=None):
         self.stream_response = stream_response
-        self.session_id = session_id or str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
+        self.session_id = session_id or str(uuid.uuid4())
         self.buffer = []
         self.chunk_count = 0
         self.total_content = ""
@@ -107,57 +108,58 @@ class GeminiStreamingResponse:
                 self.chunk_count += 1
                 self.last_chunk_time = time.time()
                 
+                # Process content if available
                 if hasattr(chunk, 'text') and chunk.text:
                     self.total_content += chunk.text
                     
                     # Create a formatted response chunk
                     content_chunk = {
                         "type": "content_block_delta",
-                        "index": 0,
+                        "chunk_id": f"{self.session_id}_{self.chunk_count}",
                         "delta": {
-                            "type": "text_delta",
                             "text": chunk.text
-                        }
+                        },
+                        "segment": self.chunk_count,
+                        "session_id": self.session_id
                     }
                     
+                    # Send content update
                     yield f"data: {json.dumps(content_chunk)}\n\n"
                     
                     # Every 10 chunks, send a keepalive
                     if self.chunk_count % 10 == 0:
-                        yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'keepalive', 'timestamp': time.time(), 'session_id': self.session_id})}\n\n"
                 
             # Completion has finished
             self.is_complete = True
             
             # Calculate token usage (approximate)
-            # For Gemini, we'll use a very rough approximation that 1 token ≈ 4 characters
-            input_tokens = 0  # We don't know the exact input token count from the API
-            output_tokens = len(self.total_content) // 4
+            # For Gemini, we'll use a rough approximation that 1 token ≈ 3.5 characters
+            input_tokens = len(self.stream_response.prompt) // 3 if hasattr(self.stream_response, 'prompt') else 0
+            output_tokens = len(self.total_content) // 3
             
-            # Send the message stop event
-            stop_event = {
-                "type": "message_stop",
-                "message": {
-                    "id": f"msg_{self.session_id}",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": self.total_content
-                        }
-                    ],
-                    "model": "gemini-2.5-pro-exp-03-25",
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens
-                    }
+            if input_tokens == 0:
+                # Fallback calculation if prompt is not available
+                input_tokens = max(1, output_tokens // 4)  # Rough estimate based on typical input/output ratios
+            
+            # Send the message complete event
+            complete_event = {
+                "type": "message_complete",
+                "message_id": f"msg_{self.session_id}",
+                "chunk_id": f"{self.session_id}_{self.chunk_count}",
+                "html": self.total_content,
+                "session_id": self.session_id,
+                "final_chunk_count": self.chunk_count,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "total_cost": 0.0  # Gemini API is free
                 }
             }
             
-            yield f"data: {json.dumps(stop_event)}\n\n"
+            yield f"data: {json.dumps(complete_event)}\n\n"
+            yield f"data: {json.dumps({'type': 'stream_end', 'message': 'Stream complete', 'session_id': self.session_id})}\n\n"
             
         except Exception as e:
             # Handle any errors that occur during streaming
@@ -166,10 +168,9 @@ class GeminiStreamingResponse:
             
             error_event = {
                 "type": "error",
-                "error": {
-                    "message": error_message,
-                    "type": "stream_error"
-                }
+                "error": error_message,
+                "details": traceback.format_exc(),
+                "session_id": self.session_id
             }
             
             yield f"data: {json.dumps(error_event)}\n\n"
