@@ -77,8 +77,8 @@ MAX_BACKOFF_DELAY = 45  # Max 45 seconds delay (reduced from 60)
 BACKOFF_FACTOR = 1.3  # Use 1.3 instead of 1.5 for more gradual increase
 
 # Gemini-specific settings
-GEMINI_MODEL = "gemini-2.5-pro-exp-03-25"
-GEMINI_MAX_OUTPUT_TOKENS = 65536
+GEMINI_MODEL = "models/gemini-2.5-pro-exp-03-25"
+GEMINI_MAX_OUTPUT_TOKENS = 128000
 GEMINI_TEMPERATURE = 1.0
 GEMINI_TOP_P = 0.95
 GEMINI_TOP_K = 64
