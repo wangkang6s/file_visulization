@@ -109,10 +109,25 @@ class GeminiStreamingResponse:
         print(f"Response is iterator: {self.is_iterator}, type: {type(stream_response)}")
         
         # If it's a single response, we'll handle it differently
-        if not self.is_iterator and hasattr(stream_response, 'text'):
-            self.generated_text = stream_response.text
-            self.received_content = True
-            print(f"Single response mode - content length: {len(self.generated_text) if self.generated_text else 0}")
+        if not self.is_iterator:
+            try:
+                # For non-streaming responses, safely check for text content
+                if hasattr(stream_response, 'text'):
+                    self.generated_text = stream_response.text
+                    self.received_content = True
+                # If response has parts (common for Gemini)
+                elif hasattr(stream_response, 'parts') and len(stream_response.parts) > 0:
+                    self.generated_text = stream_response.parts[0].text
+                    self.received_content = True
+                # Last resort, try string representation
+                else:
+                    self.generated_text = str(stream_response)
+                    self.received_content = True
+                
+                print(f"Single response mode - content length: {len(self.generated_text) if self.generated_text else 0}")
+            except Exception as e:
+                print(f"Error extracting text from non-streaming response: {str(e)}")
+                # We'll try to handle this in __next__
     
     def __enter__(self):
         print(f"Entering GeminiStreamingResponse context for session {self.session_id}")
@@ -191,16 +206,16 @@ class GeminiStreamingResponse:
             try:
                 chunk = next(self.stream_response)
                 self.chunk_count += 1
-            except (StopIteration, TypeError) as e:
-                # End of stream or not an iterator
-                # Send final usage statistics
+            except StopIteration:
+                # End of stream
+                # Send final usage statistics if we have content
                 if self.generated_text:
                     # Estimate tokens for usage statistics
                     input_tokens = max(1, int(len(self.generated_text.split()) * 1.3))  # ~1.3 tokens per word
                     output_tokens = max(1, int(len(self.generated_text.split()) * 1.3))
                     
-                    # Create a message_complete event
-                    complete_event = format_stream_event("content", {
+                    # Create a message_complete event with final stats
+                    usage_event = format_stream_event("content", {
                         "type": "message_complete",
                         "chunk_id": f"{self.session_id}_{self.chunk_count}",
                         "usage": {
@@ -212,11 +227,54 @@ class GeminiStreamingResponse:
                         "html": self.generated_text,
                         "session_id": self.session_id
                     })
-                    print(f"Stream complete, sending stats: in={input_tokens}, out={output_tokens}, chars={len(self.generated_text)}")
+                    
+                    # Set iterator as complete
                     self.iterator_complete = True
-                    return complete_event
-                else:
-                    print("Stream complete but no content was generated")
+                    print(f"Stream complete - total content length: {len(self.generated_text)}")
+                    return usage_event
+                # No content received, so just stop
+                self.iterator_complete = True
+                raise StopIteration
+            except (TypeError, AttributeError) as e:
+                # Not an iterator or attribute error when iterating
+                print(f"Error iterating through stream: {str(e)}")
+                # If we have any content already, return it with a completion message
+                if self.generated_text:
+                    self.iterator_complete = True
+                    return self._create_content_event()
+                self.iterator_complete = True
+                raise StopIteration
+            except Exception as e:
+                print(f"Unexpected error in stream iteration: {str(e)}")
+                if "IncompleteIterationError" in str(e):
+                    # Special handling for the Google AI library's IncompleteIterationError
+                    try:
+                        # Try to resolve the response
+                        if hasattr(self.stream_response, 'resolve'):
+                            resolved = self.stream_response.resolve()
+                            if hasattr(resolved, 'text'):
+                                self.generated_text = resolved.text
+                                self.received_content = True
+                                self.iterator_complete = True
+                                
+                                # Create completion event with the resolved content
+                                return format_stream_event("content", {
+                                    "type": "message_complete",
+                                    "chunk_id": f"{self.session_id}_resolved",
+                                    "usage": {
+                                        "input_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
+                                        "output_tokens": max(1, int(len(self.generated_text.split()) * 1.3)),
+                                        "total_tokens": max(2, int(len(self.generated_text.split()) * 2.6)),
+                                        "total_cost": 0.0
+                                    },
+                                    "html": self.generated_text,
+                                    "session_id": self.session_id
+                                })
+                    except Exception as resolve_error:
+                        print(f"Error resolving response: {str(resolve_error)}")
+                
+                # If all else fails, stop iteration
+                self.iterator_complete = True
                 raise StopIteration
             
             # Process the chunk
