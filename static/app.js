@@ -116,10 +116,12 @@ let state = {
 
 // Function to update processing text
 function setProcessingText(text) {
-    // Only update the in-page processing text
     if (elements.processingText) {
         elements.processingText.textContent = text;
     }
+    
+    // Do not auto-scroll here - scrolling only happens once at the start
+    // in startProcessingAnimation
 }
 
 // Initialize the app
@@ -1102,7 +1104,23 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
+            console.error(`HTTP error! Status: ${response.status}, Message:`, errorText);
+            
+            // Try to parse the error as JSON
+            try {
+                const errorJson = JSON.parse(errorText);
+                throw new Error(`Server error: ${errorJson.error || errorJson.message || 'Unknown server error'}`);
+            } catch (parseError) {
+                throw new Error(`HTTP error ${response.status}: ${errorText.substring(0, 100)}`);
+            }
+        }
+        
+        // Check if we got a JSON response instead of a stream (indicates error)
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const errorData = await response.json();
+            console.error('Server returned JSON instead of stream:', errorData);
+            throw new Error(`Server error: ${errorData.error || errorData.message || 'Unknown error'}`);
         }
         
         // Get a reader for the stream
@@ -1145,12 +1163,21 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
                         state.generatedHtml = generatedContent;
                         
                         // Update processing text
-                        setProcessingText(`Gemini is generating your visualization... (${formatFileSize(htmlBuffer.length)} generated)`);
+                        setProcessingText(`AI is working on visualizing your content. This may take 2-20 minutes depending on your content size.`);
                     } else if (eventData.type === 'message_complete') {
                         // Update usage statistics if available
                         if (eventData.usage) {
                             console.log('Received usage statistics:', eventData.usage);
                             updateUsageStatistics(eventData.usage);
+                        }
+                        
+                        // Check if we have HTML content in the completion
+                        if (eventData.html && eventData.html.length > 0) {
+                            console.log(`Received complete HTML content (${eventData.html.length} chars)`);
+                            htmlBuffer = eventData.html;
+                            generatedContent = eventData.html;
+                            state.generatedHtml = generatedContent;
+                            updateHtmlDisplay(generatedContent);
                         }
                     } else if (eventData.type === 'error') {
                         throw new Error(eventData.error || 'Unknown streaming error');
@@ -1163,6 +1190,12 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         
         // Ensure the generated content is saved to state
         state.generatedHtml = generatedContent;
+        
+        // Check if we actually received any content
+        if (!generatedContent || generatedContent.length === 0) {
+            console.error('No HTML content was received from the server');
+            throw new Error('No content received from the server. Please try again or check your API key.');
+        }
         
         // Final UI updates
         updateHtmlDisplay(generatedContent);
@@ -1197,6 +1230,12 @@ async function generateGeminiHTMLStream(apiKey, source, formatPrompt, maxTokens,
         return generatedContent;
     } catch (error) {
         console.error('Gemini streaming error:', error);
+        setProcessingText(`Error: ${error.message}`);
+        showToast(`Error: ${error.message}`, 'error');
+        state.processing = false;
+        stopElapsedTimeCounter();
+        stopProcessingAnimation(false); // animation ended with failure
+        disableInputsDuringGeneration(false);
         throw error;
     }
 }
@@ -2358,75 +2397,45 @@ async function analyzeTokens(content) {
 
 // Helper function to start processing animation
 function startProcessingAnimation() {
-    // Initialize progress bar animation
-    if (elements.progressBar) {
-        elements.progressBar.style.width = '0%';
-        elements.progressBar.classList.add('animate-progress');
-        
-        // Animate the progress bar to 90% (reserve last 10% for completion)
-        setTimeout(() => {
-            elements.progressBar.style.width = '90%';
-        }, 100);
-    }
-    
-    // Show processing status
     if (elements.processingStatus) {
         elements.processingStatus.classList.remove('hidden');
-        elements.processingStatus.classList.remove('processing-complete');
+        
+        if (elements.processingIcon) {
+            elements.processingIcon.classList.add('fa-spinner', 'fa-spin');
+            elements.processingIcon.classList.remove('fa-check-circle', 'fa-times-circle');
+            elements.processingIcon.style.color = '#3B82F6'; // Blue color
+        }
+        
+        if (elements.processingText) {
+            elements.processingText.textContent = 'AI is working on visualizing your content. This may take 2-20 minutes depending on your content size.';
+        }
+        
+        // Scroll to the processing status area exactly once
+        elements.processingStatus.scrollIntoView({ behavior: 'smooth' });
+        console.log('Processing animation started');
     }
-    
-    // Update processing text
-    setProcessingText('Processing with Claude...');
-    
-    console.log('Processing animation started');
 }
 
-// Helper function to fully stop processing animation
-function stopProcessingAnimation() {
-    // Stop progress bar animation
-    if (elements.progressBar) {
-        // Ensure the progress bar is set to 100% to indicate completion
-        elements.progressBar.style.width = '100%';
-        elements.progressBar.classList.remove('animate-progress');
-    }
-    
-    // Mark processing container as complete (for CSS targeting)
+// Stop processing animation
+function stopProcessingAnimation(success = true) {
+    // Update the status based on success/failure
     if (elements.processingStatus) {
-        elements.processingStatus.classList.add('processing-complete');
-    }
-    
-    // Update the processing text to show completion instead of hiding it
-    if (elements.processingText) {
-        elements.processingText.textContent = 'Generation complete! ✓';
-    }
-    
-    // Keep the processing status visible instead of hiding it
-    // Comment out the code that hides it
-    /*
-    if (elements.processingStatus) {
-        setTimeout(() => {
-            elements.processingStatus.classList.add('hidden');
-        }, 2000); // Hide after 2 seconds to allow user to see completion
-    }
-    */
-    
-    // Update elapsed time if it exists
-    if (elements.elapsedTime) {
-        // Get current elapsed time if not already set
-        const currentTime = state.startTime ? 
-            Math.floor((new Date() - state.startTime) / 1000) : 0;
+        if (elements.processingIcon) {
+            elements.processingIcon.classList.remove('fa-spinner', 'fa-spin');
+            
+            if (success) {
+                elements.processingIcon.classList.add('fa-check-circle');
+                elements.processingIcon.style.color = '#10B981'; // Green
+            } else {
+                elements.processingIcon.classList.add('fa-exclamation-circle');
+                elements.processingIcon.style.color = '#EF4444'; // Red
+            }
+        }
         
-        // Set to "Completed" if not already set
-        if (elements.elapsedTime.textContent.startsWith('Elapsed:')) {
-            elements.elapsedTime.textContent = `Completed in: ${formatTime(currentTime)}`;
+        if (elements.processingText && success) {
+            elements.processingText.textContent = 'Generation complete!';
         }
     }
-    
-    // Ensure timer stops
-    stopElapsedTimeCounter();
-    
-    // Reset processing status if needed
-    state.processing = false;
     
     console.log('Processing animation fully stopped');
 }

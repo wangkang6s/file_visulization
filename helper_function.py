@@ -6,6 +6,7 @@ import requests
 import time
 import uuid
 import base64
+import traceback
 
 # Import Google Generative AI package
 try:
@@ -84,95 +85,163 @@ def create_gemini_client(api_key):
         raise Exception(f"Failed to create Google Gemini client: {str(e)}")
 
 class GeminiStreamingResponse:
-    """Class to handle streaming responses from Google Gemini API"""
-    def __init__(self, stream_response, session_id=None):
+    """Custom class to handle streaming responses from Gemini"""
+    
+    def __init__(self, stream_response, session_id):
         self.stream_response = stream_response
-        self.session_id = session_id or str(int(time.time())) + "-" + str(uuid.uuid4())[:8]
-        self.buffer = []
+        self.session_id = session_id
         self.chunk_count = 0
-        self.total_content = ""
-        self.is_complete = False
-        self.last_chunk_time = time.time()
+        self.generated_text = ""
+        self.current_segment = ""
+        self.current_segment_size = 0
+        self.segment_counter = 0
+        self.max_segment_size = 16384  # 16KB per segment
+        self.html_segments = []
+        self.start_time = time.time()
+        self.received_content = False
         
+        # Log initialization
+        print(f"Initialized GeminiStreamingResponse for session {session_id}")
+    
     def __enter__(self):
+        print(f"Entering GeminiStreamingResponse context for session {self.session_id}")
         return self
-        
+    
     def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
+        end_time = time.time()
+        elapsed = end_time - self.start_time
         
+        if exc_type:
+            print(f"Exception in GeminiStreamingResponse: {exc_type.__name__}: {exc_val}")
+            if exc_tb:
+                traceback.print_tb(exc_tb)
+            return False  # Re-raise the exception
+        
+        # Send a final segment with content if content was received but not yet sent
+        if self.received_content and self.current_segment and self.current_segment_size > 0:
+            try:
+                final_segment_event = self._create_content_event()
+                print(f"Sending final segment {self.segment_counter} with size {self.current_segment_size}")
+                return final_segment_event
+            except Exception as e:
+                print(f"Error sending final segment: {str(e)}")
+        
+        # Log completion statistics
+        total_segments = len(self.html_segments)
+        total_text_length = len(self.generated_text)
+        print(f"GeminiStreamingResponse completed: {total_segments} segments, {total_text_length} chars in {elapsed:.2f}s")
+    
     def __iter__(self):
-        # Process the streaming response
+        return self
+    
+    def __next__(self):
         try:
-            for chunk in self.stream_response:
+            # Get the next chunk from the stream
+            try:
+                chunk = next(self.stream_response)
                 self.chunk_count += 1
-                self.last_chunk_time = time.time()
-                
-                if hasattr(chunk, 'text') and chunk.text:
-                    self.total_content += chunk.text
+            except StopIteration:
+                # End of stream
+                # Send final usage statistics
+                if self.generated_text:
+                    # Estimate tokens for usage statistics
+                    input_tokens = max(1, int(len(self.generated_text.split()) * 1.3))  # ~1.3 tokens per word
+                    output_tokens = max(1, int(len(self.generated_text.split()) * 1.3))
                     
-                    # Create a formatted response chunk
-                    content_chunk = {
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {
-                            "type": "text_delta",
-                            "text": chunk.text
-                        }
-                    }
+                    # Create a message_complete event
+                    complete_event = format_stream_event("content", {
+                        "type": "message_complete",
+                        "chunk_id": f"{self.session_id}_{self.chunk_count}",
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "total_cost": 0.0  # Gemini API is free
+                        },
+                        "html": self.generated_text,
+                        "session_id": self.session_id
+                    })
+                    print(f"Stream complete, sending stats: in={input_tokens}, out={output_tokens}, chars={len(self.generated_text)}")
+                    return complete_event
+                else:
+                    print("Stream complete but no content was generated")
+                raise StopIteration
+            
+            # Process the chunk
+            if hasattr(chunk, 'text'):
+                text = chunk.text
+                if text:
+                    self.received_content = True
+                    self.generated_text += text
+                    self.current_segment += text
+                    self.current_segment_size += len(text)
                     
-                    yield f"data: {json.dumps(content_chunk)}\n\n"
+                    # Check if we should close and send this segment
+                    if (self.current_segment_size >= self.max_segment_size or 
+                        (self.current_segment_size > 256 and
+                         (text.endswith('</div>') or 
+                          text.endswith('</section>') or
+                          text.endswith('</p>') or
+                          text.endswith('</table>') or
+                          text.endswith('</li>') or
+                          text.endswith('</h1>') or
+                          text.endswith('</h2>') or
+                          text.endswith('</h3>') or
+                          text.endswith('</html>')))):
+                        
+                        # Store this segment
+                        self.html_segments.append(self.current_segment)
+                        self.segment_counter += 1
+                        
+                        # Create an event for this segment
+                        event = self._create_content_event()
+                        
+                        # Reset the segment buffer
+                        self.current_segment = ""
+                        self.current_segment_size = 0
+                        
+                        # Debug log for segment
+                        if self.segment_counter % 5 == 0:
+                            print(f"Sent segment {self.segment_counter} with size {len(self.html_segments[-1])}")
+                        
+                        return event
                     
-                    # Every 10 chunks, send a keepalive
+                    # If we're not sending a segment yet, send a keepalive every few chunks
                     if self.chunk_count % 10 == 0:
-                        yield f"data: {json.dumps({'type': 'ping'})}\n\n"
-                
-            # Completion has finished
-            self.is_complete = True
+                        return format_stream_event("keepalive", {
+                            "timestamp": time.time(),
+                            "session_id": self.session_id,
+                            "chunk_count": self.chunk_count
+                        })
             
-            # Calculate token usage (approximate)
-            # For Gemini, we'll use a very rough approximation that 1 token ≈ 4 characters
-            input_tokens = 0  # We don't know the exact input token count from the API
-            output_tokens = len(self.total_content) // 4
-            
-            # Send the message stop event
-            stop_event = {
-                "type": "message_stop",
-                "message": {
-                    "id": f"msg_{self.session_id}",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": self.total_content
-                        }
-                    ],
-                    "model": "gemini-2.5-pro-exp-03-25",
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens
-                    }
-                }
-            }
-            
-            yield f"data: {json.dumps(stop_event)}\n\n"
+            # If we reach here, we've processed a chunk but didn't send an event
+            # So we continue to the next chunk by calling ourselves recursively
+            return next(self)
             
         except Exception as e:
-            # Handle any errors that occur during streaming
-            error_message = str(e)
-            print(f"Streaming error: {error_message}")
-            
-            error_event = {
+            error_msg = f"Error processing Gemini chunk: {str(e)}"
+            print(f"Error: {error_msg}")
+            print(traceback.format_exc())
+            return format_stream_event("error", {
                 "type": "error",
-                "error": {
-                    "message": error_message,
-                    "type": "stream_error"
-                }
-            }
-            
-            yield f"data: {json.dumps(error_event)}\n\n"
+                "error": error_msg,
+                "details": traceback.format_exc(),
+                "session_id": self.session_id
+            })
+    
+    def _create_content_event(self):
+        """Create a content event for the current segment"""
+        content_data = {
+            "type": "content_block_delta",
+            "chunk_id": f"{self.session_id}_{self.chunk_count}",
+            "delta": {
+                "text": self.current_segment
+            },
+            "segment": self.segment_counter,
+            "session_id": self.session_id,
+            "chunk_count": self.chunk_count
+        }
+        return format_stream_event("content", content_data)
 
 # Special client class for Vercel that doesn't use the standard Anthropic library
 class VercelCompatibleClient:

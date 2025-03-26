@@ -1694,116 +1694,174 @@ def process_gemini_stream():
     """
     Process a streaming request using Google Gemini API.
     """
-    # Extract request data
-    data = request.get_json()
-    api_key = data.get('api_key')
-    
-    # Check for both 'content' and 'source' parameters for compatibility
-    content = data.get('content', '')
-    if not content:
-        content = data.get('source', '')  # Fallback to 'source' if 'content' is empty
-    
-    # If content is empty, return an error
-    if not content:
-        return jsonify({"success": False, "error": "Source code or text is required"}), 400
-    
-    format_prompt = data.get('format_prompt', '')
-    max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
-    temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
-    
-    # Reconnection support
-    session_id = data.get('session_id', str(uuid.uuid4()))
-    
-    # Check if Gemini is available
-    if not GEMINI_AVAILABLE:
-        return jsonify({
-            'error': 'Google Generative AI package is not installed on the server.'
-        }), 500
-    
-    # Create Gemini client
     try:
-        client = create_gemini_client(api_key)
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": f"API key validation failed: {str(e)}"
-        })
-    
-    # Initialize session cache for this request
-    session_cache[session_id] = {
-        'created_at': time.time(),
-        'last_updated': time.time(),
-        'html_segments': [],
-        'generated_text': '',
-        'chunk_count': 0,
-        'user_content': content[:100000],  # Store for potential reconnection
-        'format_prompt': format_prompt,
-        'model': GEMINI_MODEL,
-        'max_tokens': max_tokens,
-        'temperature': temperature
-    }
-    
-    # Prepare prompt
-    prompt = f"""
+        # Extract request data
+        data = request.get_json()
+        api_key = data.get('api_key')
+        
+        # Check for both 'content' and 'source' parameters for compatibility
+        content = data.get('content', '')
+        if not content:
+            content = data.get('source', '')  # Fallback to 'source' if 'content' is empty
+        
+        # If content is empty, return an error
+        if not content:
+            return jsonify({"success": False, "error": "Source code or text is required"}), 400
+        
+        format_prompt = data.get('format_prompt', '')
+        max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
+        temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
+        
+        # Reconnection support
+        session_id = data.get('session_id', str(uuid.uuid4()))
+        
+        # Check if Gemini is available
+        if not GEMINI_AVAILABLE:
+            error_msg = 'Google Generative AI package is not installed on the server.'
+            print(f"Error: {error_msg}")
+            return jsonify({
+                'error': error_msg,
+                'details': 'Please install the Google Generative AI package with "pip install google-generativeai"'
+            }), 500
+        
+        # Create Gemini client
+        try:
+            client = create_gemini_client(api_key)
+            print(f"Gemini client created successfully with API key: {api_key[:4]}...")
+        except Exception as e:
+            error_msg = f"API key validation failed: {str(e)}"
+            print(f"Error: {error_msg}")
+            return jsonify({
+                "success": False,
+                "error": error_msg
+            })
+        
+        # Initialize session cache for this request
+        session_cache[session_id] = {
+            'created_at': time.time(),
+            'last_updated': time.time(),
+            'html_segments': [],
+            'generated_text': '',
+            'chunk_count': 0,
+            'user_content': content[:100000],  # Store for potential reconnection
+            'format_prompt': format_prompt,
+            'model': GEMINI_MODEL,
+            'max_tokens': max_tokens,
+            'temperature': temperature
+        }
+        
+        # Prepare prompt
+        prompt = f"""
 {SYSTEM_INSTRUCTION}
 
 Here is the content to transform into a website:
 
 {content[:100000]}
 """
-    
-    if format_prompt:
-        prompt += f"\n\n{format_prompt}"
-    
-    # Define the streaming response generator
-    def gemini_stream_generator():
-        try:
-            yield format_stream_event("stream_start", {"message": "Stream starting", "session_id": session_id})
-            
-            # Get the model
-            model = client.get_model(GEMINI_MODEL)
-            
-            # Configure generation parameters
-            generation_config = {
-                "max_output_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": GEMINI_TOP_P,
-                "top_k": GEMINI_TOP_K
-            }
-            
-            # Generate content with streaming
-            stream_response = model.generate_content(
-                prompt,
-                generation_config=generation_config,
-                stream=True
-            )
-            
-            # Use our custom streaming response class
-            with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
-                for chunk in gemini_stream:
-                    yield chunk
-                    
-                # Stream end event
-                yield format_stream_event("stream_end", {
-                    "message": "Stream complete",
+        
+        if format_prompt:
+            prompt += f"\n\n{format_prompt}"
+        
+        print(f"Prepared prompt for Gemini with length: {len(prompt)}")
+        
+        # Define the streaming response generator
+        def gemini_stream_generator():
+            try:
+                yield format_stream_event("stream_start", {"message": "Stream starting", "session_id": session_id})
+                
+                # Get the model
+                try:
+                    model = client.get_model(GEMINI_MODEL)
+                    print(f"Successfully retrieved Gemini model: {GEMINI_MODEL}")
+                except Exception as model_error:
+                    error_detail = f"Failed to get Gemini model: {str(model_error)}"
+                    print(f"Error: {error_detail}")
+                    yield format_stream_event("error", {
+                        "type": "error", 
+                        "error": "Model creation failed",
+                        "details": error_detail,
+                        "session_id": session_id
+                    })
+                    return
+                
+                # Configure generation parameters
+                generation_config = {
+                    "max_output_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": GEMINI_TOP_P,
+                    "top_k": GEMINI_TOP_K
+                }
+                
+                print(f"Starting Gemini generation with config: {generation_config}")
+                
+                # Generate content with streaming
+                try:
+                    stream_response = model.generate_content(
+                        prompt,
+                        generation_config=generation_config,
+                        stream=True
+                    )
+                    print("Stream generation started successfully")
+                except Exception as generate_error:
+                    error_detail = f"Failed to start generation: {str(generate_error)}"
+                    print(f"Error: {error_detail}")
+                    yield format_stream_event("error", {
+                        "type": "error", 
+                        "error": "Generation failed",
+                        "details": error_detail,
+                        "session_id": session_id
+                    })
+                    return
+                
+                # Use our custom streaming response class
+                try:
+                    with GeminiStreamingResponse(stream_response, session_id) as gemini_stream:
+                        for chunk in gemini_stream:
+                            yield chunk
+                            
+                        # Stream end event
+                        print("Gemini stream completed successfully")
+                        yield format_stream_event("stream_end", {
+                            "message": "Stream complete",
+                            "session_id": session_id
+                        })
+                except Exception as stream_error:
+                    error_detail = f"Stream processing error: {str(stream_error)}"
+                    print(f"Error: {error_detail}")
+                    yield format_stream_event("error", {
+                        "type": "error", 
+                        "error": "Stream processing failed",
+                        "details": error_detail,
+                        "session_id": session_id
+                    })
+                
+            except Exception as e:
+                error_message = str(e)
+                print(f"Unexpected error in gemini_stream_generator: {error_message}")
+                print(traceback.format_exc())
+                
+                yield format_stream_event("error", {
+                    "type": "error",
+                    "error": error_message,
+                    "details": traceback.format_exc(),
                     "session_id": session_id
                 })
-            
-        except Exception as e:
-            error_message = str(e)
-            print(f"Error in gemini_stream_generator: {error_message}")
-            
-            yield format_stream_event("error", {
-                "type": "error",
-                "error": error_message,
-                "session_id": session_id
-            })
+        
+        # Return the streaming response
+        return Response(
+            stream_with_context(gemini_stream_generator()),
+            content_type='text/event-stream'
+        )
     
-    # Return the streaming response
-    return Response(
-        stream_with_context(gemini_stream_generator()),
-        content_type='text/event-stream'
-    )
+    except Exception as outer_error:
+        # Catch any exceptions that might occur outside the generator
+        error_message = str(outer_error)
+        print(f"Outer exception in process_gemini_stream: {error_message}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': error_message,
+            'details': traceback.format_exc()
+        }), 500
 
 if __name__ == "__main__":
     # Parse command line arguments
