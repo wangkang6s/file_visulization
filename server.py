@@ -2,8 +2,6 @@ import threading
 
 from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
-from google.generativeai.types import RequestOptions
-
 from helper_function import create_anthropic_client, create_gemini_client, GeminiStreamingResponse
 import anthropic
 import json
@@ -1683,8 +1681,7 @@ Here is the content to transform into a website:
                 response = model.generate_content(
                     prompt,
                     generation_config=generation_config,
-                    safety_settings=safety_settings,
-                    request_options=RequestOptions(timeout=6000),
+                    safety_settings=safety_settings
                 )
 
                 # We got a response, break out of retry loop
