@@ -1703,7 +1703,8 @@ Here is the content to transform into a website:
                 response = model.generate_content(
                     prompt,
                     generation_config=generation_config,
-                    safety_settings=safety_settings
+                    safety_settings=safety_settings,
+                    timeout=300
                 )
                 
                 # We got a response, break out of retry loop
