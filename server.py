@@ -1681,6 +1681,10 @@ def process_gemini():
             "dangerous": "block_none",
         }
 
+        request_options = {
+            "timeout": 3000,
+        }
+
         # Create the prompt
         prompt = f"""
 {SYSTEM_INSTRUCTION}
@@ -1704,7 +1708,7 @@ Here is the content to transform into a website:
                     prompt,
                     generation_config=generation_config,
                     safety_settings=safety_settings,
-                    timeout=300
+                    request_options= request_options,
                 )
                 
                 # We got a response, break out of retry loop
