@@ -208,7 +208,7 @@ function init() {
         } else {
             console.error('Generate button not found in setTimeout!');
         }
-    }, 500);
+    }, 5000);
     
     // Force enable all buttons as a fallback
     setTimeout(() => {
@@ -1502,20 +1502,42 @@ async function generateGeminiHTML(apiKey, source, formatPrompt, maxTokens, tempe
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         });
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`HTTP error! Status: ${response.status}, Message: ${errorText}`);
         }
-        
+
         const data = await response.json();
         
         if (data.error) {
             throw new Error(data.error);
         }
-        
+
+        const requestBody2 = {
+            uuid :data.uuid
+        }
+
+        var html = '';
+        while (true) {
+            const response = await fetch(`${API_URL}/api/process-gemini-result`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody2)
+            });
+            result = await response.json();
+            console.log(result.html);
+            if(result.html) {
+                html = result.html
+                break
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000)); // 等待1秒再次尝试
+        }
+        console.log(html);
+
+
         // Update UI with generated HTML
-        const html = data.html;
+        //const html = data.html;
         updateHtmlDisplay(html);
         updatePreview(html);
         

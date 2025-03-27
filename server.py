@@ -1,5 +1,9 @@
+import threading
+
 from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
+from google.generativeai.types import RequestOptions
+
 from helper_function import create_anthropic_client, create_gemini_client, GeminiStreamingResponse
 import anthropic
 import json
@@ -48,6 +52,9 @@ CORS(app)  # Enable CORS for all routes
 # Set higher request timeout limits for Flask server
 app.config['TIMEOUT'] = 1800  # 30 minutes timeout
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max content size
+
+#
+result_cache = {}
 
 # Simple in-memory session cache (for production, consider Redis)
 session_cache = {}
@@ -1615,49 +1622,18 @@ def test_generate():
             "test_mode": True
         }), 200  # Return 200 for better client handling
 
-# Add a new route for Gemini API processing
-@app.route('/api/process-gemini', methods=['POST'])
-def process_gemini():
-    """
-    Process a file using the Google Gemini API and return HTML.
-    """
-    # Get the data from the request
-    print("\n==== API PROCESS GEMINI REQUEST RECEIVED ====")
-    data = request.get_json()
-    
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    
-    # Extract the API key and content
-    api_key = data.get('api_key')
-    content = data.get('content')
-    format_prompt = data.get('format_prompt', '')
-    max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
-    temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
-    
-    print(f"Processing Gemini request with max_tokens={max_tokens}, content_length={len(content) if content else 0}")
-    
-    # Check if we have the required data
-    if not api_key or not content:
-        return jsonify({'error': 'API key and content are required'}), 400
-    
-    # Check if Gemini is available
-    if not GEMINI_AVAILABLE:
-        return jsonify({
-            'error': 'Google Generative AI package is not installed on the server.'
-        }), 500
-    
+def gemini_task(api_key, content, format_prompt, max_tokens, temperature,new_guid):
     try:
         # Use our helper function to create a Gemini client
         client = create_gemini_client(api_key)
-        
+
         # Prepare user message with content and additional prompt
         user_content = content
         if format_prompt:
             user_content = f"{user_content}\n\n{format_prompt}"
-        
+
         print("Creating Gemini model...")
-        
+
         # Get the model
         model = client.get_model(GEMINI_MODEL)
         print("Model created successfully")
@@ -1672,7 +1648,7 @@ def process_gemini():
             "top_p": GEMINI_TOP_P,
             "top_k": GEMINI_TOP_K
         }
-        
+
         # Use more reliable safety settings to prevent empty responses
         safety_settings = {
             "harassment": "block_none",
@@ -1693,32 +1669,31 @@ Here is the content to transform into a website:
 
 {user_content}
 """
-        
         # Generate content
         print(f"Generating content with {GEMINI_MODEL}, max_tokens={max_tokens}, temperature={temperature}")
-        
+
         # Use more robust error handling and retry logic
         max_retries = 3
         retry_count = 0
         last_error = None
-        
+
         while retry_count < max_retries:
             try:
                 response = model.generate_content(
                     prompt,
                     generation_config=generation_config,
                     safety_settings=safety_settings,
-                    request_options= request_options,
+                    request_options=RequestOptions(timeout=6000),
                 )
-                
+
                 # We got a response, break out of retry loop
                 break
-                
+
             except Exception as e:
                 last_error = e
                 retry_count += 1
                 print(f"Gemini API error (attempt {retry_count}/{max_retries}): {str(e)}")
-                
+
                 # Wait before retrying
                 if retry_count < max_retries:
                     wait_time = 2 ** retry_count  # Exponential backoff
@@ -1727,21 +1702,21 @@ Here is the content to transform into a website:
                 else:
                     # Max retries reached, raise the last error
                     raise
-        
+
         # Extract the HTML from the response
         html_content = ""
-        
+
         # Try multiple approaches to extract content
         if hasattr(response, 'text'):
             html_content = response.text
         elif hasattr(response, 'parts') and response.parts:
             html_content = response.parts[0].text
-        
+
         # Clean HTML content if it contains markdown-style code blocks
         if html_content and ('```html' in html_content or '```' in html_content):
             # Extract the actual HTML from between the markdown code blocks
             print("Detected markdown code blocks in Gemini response, extracting HTML...")
-            
+
             # First try with ```html specific tag
             html_match = re.search(r'```html\s*([\s\S]*?)\s*```', html_content)
             if html_match and html_match[1]:
@@ -1753,16 +1728,16 @@ Here is the content to transform into a website:
                 if html_match and html_match[1]:
                     html_content = html_match[1].strip()
                     print(f"Extracted HTML from generic markdown blocks, new length: {len(html_content)}")
-        
+
         # If we still don't have content, use string representation
         if not html_content:
             print("Warning: Could not extract HTML content using standard methods")
             html_content = str(response)
-        
+
         # Verify that the content looks like HTML
         if not html_content.strip().startswith('<') and not '<html' in html_content:
             print(f"Warning: Content doesn't appear to be HTML. Content starts with: {html_content[:100]}")
-            
+
             # Attempt to fix by wrapping in HTML tags if it's just text content
             if not html_content.strip().startswith('<'):
                 print("Attempting to fix by wrapping in HTML tags")
@@ -1788,39 +1763,43 @@ Here is the content to transform into a website:
 </body>
 </html>
 """
-        
+
         # Get usage stats (approximate since Gemini doesn't provide exact token counts)
         input_tokens = len(prompt.split()) * 1.3  # Rough estimate: ~1.3 tokens per word
         output_tokens = len(html_content.split()) * 1.3
-        
+
         # Ensure we don't have zero tokens (minimum of source length / 3)
         input_tokens = max(len(content.split()) * 1.3, input_tokens)
-        
+
         # Round to integers
         input_tokens = max(1, int(input_tokens))
         output_tokens = max(1, int(output_tokens))
-        
+
         # Log response
         print(f"Successfully generated HTML with Gemini. Input tokens: {input_tokens}, Output tokens: {output_tokens}")
-        
+
+        print(html_content)
+
+        result_cache[new_guid] = html_content
+
         # Return the response
-        return jsonify({
-            'html': html_content,
-            'model': GEMINI_MODEL,
-            'usage': {
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens,
-                'total_tokens': input_tokens + output_tokens,
-                'total_cost': 0.0  # Gemini API is currently free
-            }
-        })
-    
+        # return {
+        #     'html': html_content,
+        #     'model': GEMINI_MODEL,
+        #     'usage': {
+        #         'input_tokens': input_tokens,
+        #         'output_tokens': output_tokens,
+        #         'total_tokens': input_tokens + output_tokens,
+        #         'total_cost': 0.0  # Gemini API is currently free
+        #     }
+        # }
+
     except Exception as e:
         error_message = str(e)
         traceback_str = traceback.format_exc()
         print(f"Error in /api/process-gemini: {error_message}")
         print(f"Traceback: {traceback_str}")
-        
+
         # Create a graceful fallback error page as HTML
         error_html = f"""
         <!DOCTYPE html>
@@ -1851,12 +1830,113 @@ Here is the content to transform into a website:
         </body>
         </html>
         """
-        
+
+        result_cache[new_guid] = error_html
         # Return error as both JSON and HTML
+        # return {
+        #     'error': f'Server error: {error_message}',
+        #     'html': error_html
+        # }
+
+@app.route('/api/process-gemini-result', methods=['POST'])
+def process_gemini_result():
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    # Extract the API key and content
+    uuid = data.get('uuid')
+
+    if uuid in result_cache:
+        return jsonify({"html": result_cache[uuid]}), 200
+    else:
+        return jsonify({"html": None}), 200
+
+
+
+@app.route('/api/process-gemini', methods=['POST'])
+def process_gemini():
+    """
+    Process a file using the Google Gemini API and return HTML.
+    """
+    # Get the data from the request
+    print("\n==== API PROCESS GEMINI REQUEST RECEIVED ====")
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    # Extract the API key and content
+    api_key = data.get('api_key')
+    content = data.get('content')
+    format_prompt = data.get('format_prompt', '')
+    max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
+    temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
+
+    print(f"Processing Gemini request with max_tokens={max_tokens}, content_length={len(content) if content else 0}")
+
+    # Check if we have the required data
+    if not api_key or not content:
+        return jsonify({'error': 'API key and content are required'}), 400
+
+    # Check if Gemini is available
+    if not GEMINI_AVAILABLE:
         return jsonify({
-            'error': f'Server error: {error_message}', 
-            'html': error_html
+            'error': 'Google Generative AI package is not installed on the server.'
         }), 500
+
+    new_guid = str(uuid.uuid4())
+    #     return jsonify({
+    #         'guid': new_guid
+    #     }), 500
+
+    # Start the task in a new thread
+    task_thread = threading.Thread(target=gemini_task, args=(api_key, content, format_prompt, max_tokens, temperature,new_guid))
+    task_thread.start()
+    #task_thread.join()
+
+    # Return a response indicating the task has started
+    return jsonify({"status": "Task started","uuid":new_guid}), 202
+
+
+# # Add a new route for Gemini API processing
+# @app.route('/api/process-gemini', methods=['POST'])
+# def process_gemini():
+#     """
+#     Process a file using the Google Gemini API and return HTML.
+#     """
+#     # Get the data from the request
+#     print("\n==== API PROCESS GEMINI REQUEST RECEIVED ====")
+#     data = request.get_json()
+#
+#     if not data:
+#         return jsonify({"error": "No data provided"}), 400
+#
+#     # Extract the API key and content
+#     api_key = data.get('api_key')
+#     content = data.get('content')
+#     format_prompt = data.get('format_prompt', '')
+#     max_tokens = int(data.get('max_tokens', GEMINI_MAX_OUTPUT_TOKENS))
+#     temperature = float(data.get('temperature', GEMINI_TEMPERATURE))
+#
+#     print(f"Processing Gemini request with max_tokens={max_tokens}, content_length={len(content) if content else 0}")
+#
+#     # Check if we have the required data
+#     if not api_key or not content:
+#         return jsonify({'error': 'API key and content are required'}), 400
+#
+#     # Check if Gemini is available
+#     if not GEMINI_AVAILABLE:
+#         return jsonify({
+#             'error': 'Google Generative AI package is not installed on the server.'
+#         }), 500
+#
+#     new_guid = str(uuid.uuid4())
+#     return jsonify({
+#         'guid': new_guid
+#     }), 500
+
 
 # Add a streaming endpoint for Gemini
 @app.route('/api/process-gemini-stream', methods=['POST'])
