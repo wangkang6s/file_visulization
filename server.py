@@ -1661,9 +1661,10 @@ def process_gemini():
         # Get the model
         model = client.get_model(GEMINI_MODEL)
         print("Model created successfully")
-        result = model.generate_content('Tell me a story about a magic backpack')
-        print(result.text)
-        print("==============================")
+        print(GEMINI_MODEL)
+        # result = model.generate_content('Tell me a story about a magic backpack')
+        # print(result.text)
+        # print("==============================")
         # Configure generation parameters with more reliable settings
         generation_config = {
             "max_output_tokens": max_tokens,
