@@ -98,8 +98,8 @@ class GeminiStreamingResponse:
         self.accumulated_text = ""
         self.start_time = time.time()
         self.last_progress_time = time.time()
-        self.timeout = 60  # Maximum time to wait for first chunk (seconds)
-        self.progress_timeout = 10  # Maximum time to wait between chunks (seconds)
+        self.timeout = 300  # Maximum time to wait for first chunk (seconds)
+        self.progress_timeout = 100  # Maximum time to wait between chunks (seconds)
         self.response_complete = False
         
     def __enter__(self):
@@ -428,7 +428,7 @@ class VercelCompatibleClient:
                 # For Vercel, reduce the expected response timeout and add retry mechanism
                 if is_vercel:
                     # Add a shorter timeout for Vercel environment
-                    timeout = 8  # 8 seconds to stay under Vercel's 10s limit
+                    timeout = 30  # 8 seconds to stay under Vercel's 10s limit
                 else:
                     # For local environment, use a longer timeout
                     timeout = 30
