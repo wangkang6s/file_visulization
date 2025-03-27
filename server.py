@@ -787,7 +787,8 @@ def create_stream_generator(client, system_prompt, user_message, model, max_toke
         }
         yield format_stream_event("error", error_data)
 
-# Add API endpoint for streaming processing
+
+
 @app.route('/api/process-stream', methods=['POST'])
 def process_stream():
     """
@@ -889,7 +890,7 @@ def process_stream():
         if 'generated_text' in cached_data:
             # Use streaming response to deliver cached content and then continue
             return Response(
-                stream_with_context(resume_from_cache(session_id, last_chunk_id, api_key)),
+                #stream_with_context(resume_from_cache(session_id, last_chunk_id, api_key)),
                 content_type='text/event-stream'
             )
     
