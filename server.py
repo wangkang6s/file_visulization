@@ -9,6 +9,7 @@ import os
 import re
 import time
 import traceback
+from google import genai
 from google.genai import types
 # Updated import to be compatible with different versions of the Anthropic library
 try:
@@ -37,7 +38,7 @@ except ImportError:
 
 # Import Google Generative AI package
 try:
-    import google.generativeai as genai
+    #import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -406,34 +407,6 @@ def process_file():
     print(f"Processing request with content length: {len(content) if content else 0}")
     print(f"Request JSON: {data}")
     print('API Key:', api_key)
-
-    client = genai.Client(
-        api_key=os.environ.get("AIzaSyDwTBDTamIT68tvYi57OlbkRt-s6IbAMwc"),
-    )
-
-    model = "gemini-2.5-pro-exp-03-25"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="who is the president of the united states?"),
-            ],
-        ),
-    ]
-    generate_content_config = types.GenerateContentConfig(
-        temperature=1,
-        top_p=0.95,
-        top_k=64,
-        max_output_tokens=65536,
-        response_mime_type="text/plain",
-    )
-
-    for chunk in client.models.generate_content_stream(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
-    ):
-        print(chunk.text, end="")
 
     format_prompt = data.get('format_prompt', '')
     model = data.get('model', 'claude-3-7-sonnet-20250219')
@@ -1623,42 +1596,11 @@ def test_generate():
 
 def gemini_task(api_key, content, format_prompt, max_tokens, temperature,new_guid):
     try:
-        # Use our helper function to create a Gemini client
-        client = create_gemini_client(api_key)
 
         # Prepare user message with content and additional prompt
         user_content = content
         if format_prompt:
             user_content = f"{user_content}\n\n{format_prompt}"
-
-        print("Creating Gemini model...")
-
-        # Get the model
-        model = client.get_model(GEMINI_MODEL)
-        print("Model created successfully")
-        print(GEMINI_MODEL)
-        # result = model.generate_content('Tell me a story about a magic backpack')
-        # print(result.text)
-        # print("==============================")
-        # Configure generation parameters with more reliable settings
-        generation_config = {
-            "max_output_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": GEMINI_TOP_P,
-            "top_k": GEMINI_TOP_K
-        }
-
-        # Use more reliable safety settings to prevent empty responses
-        safety_settings = {
-            "harassment": "block_none",
-            "hate_speech": "block_none",
-            "sexual": "block_none",
-            "dangerous": "block_none",
-        }
-
-        request_options = {
-            "timeout": 3000,
-        }
 
         # Create the prompt
         prompt = f"""
@@ -1671,44 +1613,40 @@ Here is the content to transform into a website:
         # Generate content
         print(f"Generating content with {GEMINI_MODEL}, max_tokens={max_tokens}, temperature={temperature}")
 
-        # Use more robust error handling and retry logic
-        max_retries = 3
-        retry_count = 0
-        last_error = None
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
+        client = genai.Client(
+            api_key=api_key,
+        )
+        model = "gemini-2.5-pro-exp-03-25"
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
 
-        while retry_count < max_retries:
-            try:
-                response = model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                    safety_settings=safety_settings
-                )
-
-                # We got a response, break out of retry loop
-                break
-
-            except Exception as e:
-                last_error = e
-                retry_count += 1
-                print(f"Gemini API error (attempt {retry_count}/{max_retries}): {str(e)}")
-
-                # Wait before retrying
-                if retry_count < max_retries:
-                    wait_time = 2 ** retry_count  # Exponential backoff
-                    print(f"Waiting {wait_time} seconds before retry...")
-                    time.sleep(wait_time)
-                else:
-                    # Max retries reached, raise the last error
-                    raise
+        result_str = ''
+        for chunk in client.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=generate_content_config,
+        ):
+            result_str+=chunk.text
+            print('\n\n\n')
+            print(result_str)
 
         # Extract the HTML from the response
-        html_content = ""
+        html_content = result_str
 
         # Try multiple approaches to extract content
-        if hasattr(response, 'text'):
-            html_content = response.text
-        elif hasattr(response, 'parts') and response.parts:
-            html_content = response.parts[0].text
+        # if hasattr(response, 'text'):
+        #     html_content = response.text
+        # elif hasattr(response, 'parts') and response.parts:
+        #     html_content = response.parts[0].text
 
         # Clean HTML content if it contains markdown-style code blocks
         if html_content and ('```html' in html_content or '```' in html_content):
@@ -1852,7 +1790,6 @@ def process_gemini_result():
         return jsonify({"html": None}), 200
 
 
-
 @app.route('/api/process-gemini', methods=['POST'])
 def process_gemini():
     """
@@ -1885,10 +1822,6 @@ def process_gemini():
         }), 500
 
     new_guid = str(uuid.uuid4())
-    #     return jsonify({
-    #         'guid': new_guid
-    #     }), 500
-
     # Start the task in a new thread
     task_thread = threading.Thread(target=gemini_task, args=(api_key, content, format_prompt, max_tokens, temperature,new_guid))
     task_thread.start()
